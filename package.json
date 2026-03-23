@@ -8,7 +8,8 @@
   "main": "server.mjs",
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs"
+    "test": "node --test",
+    "check": "node --check server.mjs && node --check bridge-core.mjs && npm test"
   },
   "engines": {
     "node": ">=20"
@@ -16,13 +17,12 @@
   "author": "mym <xjtumym@gmail.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://gitee.com/cat-mike/plan_dispatch.git",
-    "directory": "telegram-codex-bridge"
+    "url": "git+https://github.com/Yingming-Mao/telegram-codex-bridge.git"
   },
   "bugs": {
-    "url": "https://gitee.com/cat-mike/plan_dispatch/issues"
+    "url": "https://github.com/Yingming-Mao/telegram-codex-bridge/issues"
   },
-  "homepage": "https://gitee.com/cat-mike/plan_dispatch",
+  "homepage": "https://github.com/Yingming-Mao/telegram-codex-bridge#readme",
   "keywords": [
     "telegram",
     "codex",

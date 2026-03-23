@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 
+import {
+  buildCodexArgs,
+  formatTelegramStartupError,
+  keepTail,
+  redactUrlAuth,
+  splitText,
+} from './bridge-core.mjs';
 import { Bot } from 'grammy';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -277,7 +284,20 @@ function startTyping(chatId) {
 
 async function runCodex(prompt, imagePaths, sessionId) {
   const outputPath = join(RUN_DIR, `${Date.now()}-${randomUUID()}.txt`);
-  const args = buildCodexArgs({ sessionId, imagePaths, outputPath });
+  const args = buildCodexArgs({
+    sessionId,
+    imagePaths,
+    outputPath,
+    config: {
+      fullAuto: CODEX_FULL_AUTO,
+      model: CODEX_MODEL,
+      profile: CODEX_PROFILE,
+      sandbox: CODEX_SANDBOX,
+      skipGitRepoCheck: CODEX_SKIP_GIT_REPO_CHECK,
+      stateDir: STATE_DIR,
+      workdir: CODEX_WORKDIR,
+    },
+  });
 
   return await new Promise((resolve, reject) => {
     const child = spawn(CODEX_BIN, args, {
@@ -479,28 +499,6 @@ async function writeChatState(chatId, state) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`);
 }
 
-function splitText(text, limit) {
-  if (!text) return [];
-  if (text.length <= limit) return [text];
-
-  const chunks = [];
-  let rest = text;
-
-  while (rest.length > limit) {
-    const paragraph = rest.lastIndexOf('\n\n', limit);
-    const newline = rest.lastIndexOf('\n', limit);
-    const space = rest.lastIndexOf(' ', limit);
-    const cut =
-      paragraph > limit / 2 ? paragraph : newline > limit / 2 ? newline : space > 0 ? space : limit;
-
-    chunks.push(rest.slice(0, cut).trimEnd());
-    rest = rest.slice(cut).trimStart();
-  }
-
-  if (rest) chunks.push(rest);
-  return chunks;
-}
-
 function isAllowedUser(userId) {
   return userId != null && ALLOWED_USER_IDS.has(String(userId));
 }
@@ -531,10 +529,6 @@ function firstEnvValue(keys) {
 
 function stripTrailingSlash(value) {
   return String(value ?? '').replace(/\/+$/, '');
-}
-
-function keepTail(text, maxLength) {
-  return text.length > maxLength ? text.slice(text.length - maxLength) : text;
 }
 
 function parseJsonLine(line) {
@@ -589,7 +583,13 @@ async function startBot() {
       },
     });
   } catch (err) {
-    process.stderr.write(`${formatTelegramStartupError(err)}\n`);
+    process.stderr.write(
+      `${formatTelegramStartupError({
+        err,
+        apiRoot: TELEGRAM_API_ROOT,
+        proxyUrl: TELEGRAM_PROXY_URL,
+      })}\n`,
+    );
     process.exit(1);
   }
 }
@@ -739,61 +739,6 @@ async function downloadTelegramBuffer(url) {
   });
 }
 
-function formatTelegramStartupError(err) {
-  const networkError = err?.error ?? err?.cause ?? err;
-  const code = networkError?.code ?? 'UNKNOWN';
-  const fullMessage = [err?.message, networkError?.message].filter(Boolean).join(' | ');
-
-  if (/\(409:\s*Conflict:/i.test(fullMessage)) {
-    return [
-      'telegram-codex-bridge: another bot instance is already polling this token.',
-      `api_root: ${TELEGRAM_API_ROOT}`,
-      `proxy: ${TELEGRAM_PROXY_URL ? redactUrlAuth(TELEGRAM_PROXY_URL) : '(none)'}`,
-      'detail: Telegram returned 409 Conflict for getUpdates.',
-      'Only one process can use long polling for the same bot token at a time.',
-      'Stop the other running bot instance, or create a new bot token with @BotFather and update TELEGRAM_BOT_TOKEN.',
-      'If you saw a different reply style in Telegram before, that other instance was likely handling your messages.',
-    ].join('\n');
-  }
-
-  const lines = [
-    'telegram-codex-bridge: failed to reach Telegram Bot API.',
-    `api_root: ${TELEGRAM_API_ROOT}`,
-    `proxy: ${TELEGRAM_PROXY_URL ? redactUrlAuth(TELEGRAM_PROXY_URL) : '(none)'}`,
-    `network_code: ${code}`,
-    `detail: ${networkError?.message ?? String(networkError)}`,
-  ];
-
-  if (code === 'ECONNREFUSED' && TELEGRAM_PROXY_URL) {
-    lines.push('The configured proxy refused the connection. Make sure the local proxy process is running.');
-  } else if (['ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'ECONNRESET'].includes(code)) {
-    lines.push(
-      TELEGRAM_PROXY_URL
-        ? 'Telegram is still unreachable through the configured proxy.'
-        : 'Telegram is unreachable directly from this machine. Set TELEGRAM_PROXY_URL or TELEGRAM_API_ROOT to a reachable endpoint.',
-    );
-  }
-
-  if (err?.message && err.message !== networkError?.message) {
-    lines.push(`api_error: ${err.message}`);
-  }
-
-  return lines.join('\n');
-}
-
-function redactUrlAuth(value) {
-  try {
-    const parsed = new URL(value);
-    if (parsed.username || parsed.password) {
-      parsed.username = '***';
-      parsed.password = '***';
-    }
-    return parsed.toString();
-  } catch {
-    return value;
-  }
-}
-
 function safeName(value) {
   return value?.replace(/[^\w.-]+/g, '_');
 }
@@ -810,43 +755,6 @@ function sanitizeExt(ext) {
 
 function isImagePath(path) {
   return ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(extname(path).toLowerCase());
-}
-
-function buildCodexArgs({ sessionId, imagePaths, outputPath }) {
-  const args = ['exec'];
-
-  if (sessionId) {
-    args.push('resume');
-    if (CODEX_FULL_AUTO) args.push('--full-auto');
-    if (CODEX_SKIP_GIT_REPO_CHECK) args.push('--skip-git-repo-check');
-    for (const imagePath of imagePaths) {
-      args.push('-i', imagePath);
-    }
-    args.push('--json', '-o', outputPath, sessionId, '-');
-    return args;
-  }
-
-  args.push(
-    '-C',
-    CODEX_WORKDIR,
-    '-s',
-    CODEX_SANDBOX,
-    '--json',
-    '--color',
-    'never',
-    '--add-dir',
-    STATE_DIR,
-  );
-
-  if (CODEX_FULL_AUTO) args.push('--full-auto');
-  if (CODEX_MODEL) args.push('-m', CODEX_MODEL);
-  if (CODEX_PROFILE) args.push('-p', CODEX_PROFILE);
-  if (CODEX_SKIP_GIT_REPO_CHECK) args.push('--skip-git-repo-check');
-  for (const imagePath of imagePaths) {
-    args.push('-i', imagePath);
-  }
-  args.push('-o', outputPath, '-');
-  return args;
 }
 
 function loadEnvFile(file) {
