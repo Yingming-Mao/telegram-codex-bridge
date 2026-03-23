@@ -1,0 +1,36 @@
+{
+  "name": "telegram-codex-bridge",
+  "version": "0.1.0",
+  "description": "Telegram bot bridge for Codex CLI sessions",
+  "private": false,
+  "license": "MIT",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "author": "mym <xjtumym@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitee.com/cat-mike/plan_dispatch.git",
+    "directory": "telegram-codex-bridge"
+  },
+  "bugs": {
+    "url": "https://gitee.com/cat-mike/plan_dispatch/issues"
+  },
+  "homepage": "https://gitee.com/cat-mike/plan_dispatch",
+  "keywords": [
+    "telegram",
+    "codex",
+    "bot",
+    "bridge",
+    "openai"
+  ],
+  "dependencies": {
+    "grammy": "^1.38.3"
+  }
+}

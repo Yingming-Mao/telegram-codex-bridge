@@ -1,0 +1,17 @@
+.env
+.env.local
+.env.*.local
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+*.pid
+*.pid.lock
+.DS_Store
+.idea/
+.vscode/
+.codex-telegram-bridge/
+state/
+tmp/
