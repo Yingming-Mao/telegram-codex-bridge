@@ -1,7 +1,7 @@
 {
   "name": "telegram-codex-bridge",
   "version": "0.1.0",
-  "description": "Telegram bot bridge for Codex CLI sessions",
+  "description": "Telegram and Lark bot bridge for Codex CLI sessions",
   "private": false,
   "license": "MIT",
   "type": "module",
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test",
-    "check": "node --check server.mjs && node --check bridge-core.mjs && npm test"
+    "check": "node --check server.mjs && node --check bridge-core.mjs && node --check bridge-rich-text.mjs && node --check codex-runtime.mjs && npm test"
   },
   "engines": {
     "node": ">=20"
@@ -25,12 +25,15 @@
   "homepage": "https://github.com/Yingming-Mao/telegram-codex-bridge#readme",
   "keywords": [
     "telegram",
+    "lark",
+    "feishu",
     "codex",
     "bot",
     "bridge",
     "openai"
   ],
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.55.0",
     "grammy": "^1.38.3"
   }
 }

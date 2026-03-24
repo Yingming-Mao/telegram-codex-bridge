@@ -1,0 +1,25 @@
+{
+  "name": "codex-feishu-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone Feishu/Lark bridge for Codex CLI",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check server.mjs && node --check ../../codex-runtime.mjs && node --check ../../bridge-rich-text.mjs"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.55.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "codex",
+    "feishu",
+    "lark",
+    "bridge"
+  ],
+  "license": "MIT"
+}

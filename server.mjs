@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 
 import {
-  buildCodexArgs,
   formatTelegramStartupError,
-  keepTail,
   redactUrlAuth,
   splitText,
 } from './bridge-core.mjs';
+import { renderTelegramHtml } from './bridge-rich-text.mjs';
+import {
+  createChatQueueManager,
+  createChatStateStore,
+  createCodexRuntime,
+} from './codex-runtime.mjs';
 import { Bot } from 'grammy';
-import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, readFileSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmodSync, readFileSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import * as http from 'node:http';
 import * as https from 'node:https';
 import * as net from 'node:net';
@@ -22,30 +25,24 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const PROJECT_ROOT = dirname(__filename);
+const FEISHU_ADAPTER_ROOT = join(PROJECT_ROOT, 'adapters', 'feishu');
 
 loadEnvFile(join(PROJECT_ROOT, '.env'));
 
+const BRIDGE_PLATFORM = detectBridgePlatform();
+
+if (BRIDGE_PLATFORM === 'feishu') {
+  await handoffToFeishuStandalone();
+  process.exit(0);
+}
+
 const STATE_DIR =
-  process.env.TELEGRAM_CODEX_STATE_DIR ?? join(homedir(), '.codex-telegram-bridge');
+  process.env.BRIDGE_STATE_DIR ??
+  process.env.TELEGRAM_CODEX_STATE_DIR ??
+  process.env.LARK_CODEX_STATE_DIR ??
+  join(homedir(), BRIDGE_PLATFORM === 'lark' ? '.codex-lark-bridge' : '.codex-telegram-bridge');
 
 loadEnvFile(join(STATE_DIR, '.env'));
-
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-if (!TOKEN) {
-  process.stderr.write(
-    'telegram-codex-bridge: TELEGRAM_BOT_TOKEN is required.\n' +
-      `Put it in ${join(PROJECT_ROOT, '.env')} or ${join(STATE_DIR, '.env')}.\n`,
-  );
-  process.exit(1);
-}
-
-const ALLOWED_USER_IDS = new Set(parseCsv(process.env.ALLOWED_TELEGRAM_USER_IDS));
-if (ALLOWED_USER_IDS.size === 0) {
-  process.stderr.write(
-    'telegram-codex-bridge: ALLOWED_TELEGRAM_USER_IDS is required for safety.\n',
-  );
-  process.exit(1);
-}
 
 const CHAT_DIR = join(STATE_DIR, 'chats');
 const INBOX_DIR = join(STATE_DIR, 'inbox');
@@ -58,6 +55,11 @@ const CODEX_PROFILE = process.env.CODEX_PROFILE;
 const CODEX_SANDBOX = process.env.CODEX_SANDBOX ?? 'workspace-write';
 const CODEX_FULL_AUTO = parseBool(process.env.CODEX_FULL_AUTO ?? '1');
 const CODEX_SKIP_GIT_REPO_CHECK = parseBool(process.env.CODEX_SKIP_GIT_REPO_CHECK ?? '0');
+const MAX_PROMPT_CHARS = positiveInt(process.env.MAX_PROMPT_CHARS, 16000);
+const MAX_OUTPUT_CHARS = positiveInt(process.env.MAX_OUTPUT_CHARS, 12000);
+
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_ALLOWED_USER_IDS = new Set(parseCsv(process.env.ALLOWED_TELEGRAM_USER_IDS));
 const TELEGRAM_API_ROOT = stripTrailingSlash(process.env.TELEGRAM_API_ROOT ?? 'https://api.telegram.org');
 const TELEGRAM_PROXY_URL = firstEnvValue([
   'TELEGRAM_PROXY_URL',
@@ -71,20 +73,38 @@ const TELEGRAM_PROXY_URL = firstEnvValue([
 const TELEGRAM_FILE_ROOT = stripTrailingSlash(
   process.env.TELEGRAM_FILE_ROOT ?? `${TELEGRAM_API_ROOT}/file`,
 );
-const MAX_PROMPT_CHARS = positiveInt(process.env.MAX_PROMPT_CHARS, 16000);
-const MAX_OUTPUT_CHARS = positiveInt(process.env.MAX_OUTPUT_CHARS, 12000);
 const TELEGRAM_CHUNK_LIMIT = 3800;
-
 const TELEGRAM_FETCH_AGENT = buildTelegramFetchAgent(TELEGRAM_PROXY_URL);
 
-const bot = new Bot(TOKEN, {
-  client: {
-    apiRoot: TELEGRAM_API_ROOT,
-    baseFetchConfig: TELEGRAM_FETCH_AGENT ? { agent: TELEGRAM_FETCH_AGENT } : undefined,
-  },
-});
-const chatQueues = new Map();
+const LARK_APP_ID = process.env.LARK_APP_ID;
+const LARK_APP_SECRET = process.env.LARK_APP_SECRET;
+const LARK_ALLOWED_OPEN_IDS = new Set(parseCsv(process.env.ALLOWED_LARK_OPEN_IDS));
+const LARK_API_ROOT = stripTrailingSlash(process.env.LARK_API_ROOT ?? 'https://open.feishu.cn/open-apis');
+const LARK_HOST = process.env.LARK_HOST ?? '0.0.0.0';
+const LARK_PORT = positiveInt(process.env.LARK_PORT, 8787);
+const LARK_WEBHOOK_PATH = normalizeWebhookPath(process.env.LARK_WEBHOOK_PATH ?? '/webhook/lark');
+const LARK_VERIFICATION_TOKEN = process.env.LARK_VERIFICATION_TOKEN?.trim() || null;
+const LARK_ALLOW_GROUPS = parseBool(process.env.LARK_ALLOW_GROUPS ?? '0');
+const LARK_CHUNK_LIMIT = 3000;
+
+const seenLarkEvents = new Map();
+let larkAccessTokenCache = null;
+let bot = null;
+let larkServer = null;
 let shutdownRequested = false;
+const stateStore = createChatStateStore(CHAT_DIR);
+const queueManager = createChatQueueManager({ logPrefix: 'telegram-codex-bridge' });
+const codexRuntime = createCodexRuntime({
+  bin: CODEX_BIN,
+  fullAuto: CODEX_FULL_AUTO,
+  model: CODEX_MODEL,
+  profile: CODEX_PROFILE,
+  runDir: RUN_DIR,
+  sandbox: CODEX_SANDBOX,
+  skipGitRepoCheck: CODEX_SKIP_GIT_REPO_CHECK,
+  stateDir: STATE_DIR,
+  workdir: CODEX_WORKDIR,
+});
 
 registerShutdownHandlers();
 
@@ -95,143 +115,473 @@ await Promise.all([
   mkdir(RUN_DIR, { recursive: true }),
 ]);
 
-bot.command('start', async ctx => {
-  if (ctx.chat?.type !== 'private') return;
+if (BRIDGE_PLATFORM === 'lark') {
+  validateLarkConfig();
+  await startLarkBridge();
+} else {
+  validateTelegramConfig();
+  await startTelegramBridge();
+}
 
-  const allowed = isAllowedUser(ctx.from?.id);
-  const text = allowed
-    ? [
-        'Telegram Codex bridge is online.',
+function detectBridgePlatform() {
+  const explicit = process.env.BRIDGE_PLATFORM?.trim().toLowerCase();
+  if (explicit === 'telegram' || explicit === 'lark' || explicit === 'feishu') {
+    return explicit;
+  }
+  if ((process.env.FEISHU_APP_ID || process.env.LARK_APP_ID) && !process.env.TELEGRAM_BOT_TOKEN) {
+    return 'feishu';
+  }
+  return 'telegram';
+}
+
+async function handoffToFeishuStandalone() {
+  await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['server.mjs'], {
+      cwd: FEISHU_ADAPTER_ROOT,
+      env: process.env,
+      stdio: 'inherit',
+    });
+
+    child.on('error', reject);
+    child.on('close', code => {
+      if ((code ?? 0) === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Feishu bridge exited with code ${code ?? 'unknown'}.`));
+      }
+    });
+  });
+}
+
+function validateTelegramConfig() {
+  if (!TELEGRAM_TOKEN) {
+    process.stderr.write(
+      'telegram-codex-bridge: TELEGRAM_BOT_TOKEN is required in telegram mode.\n' +
+        `Put it in ${join(PROJECT_ROOT, '.env')} or ${join(STATE_DIR, '.env')}.\n`,
+    );
+    process.exit(1);
+  }
+  if (TELEGRAM_ALLOWED_USER_IDS.size === 0) {
+    process.stderr.write(
+      'telegram-codex-bridge: ALLOWED_TELEGRAM_USER_IDS is required for safety.\n',
+    );
+    process.exit(1);
+  }
+}
+
+function validateLarkConfig() {
+  if (!LARK_APP_ID || !LARK_APP_SECRET) {
+    process.stderr.write(
+      'telegram-codex-bridge: LARK_APP_ID and LARK_APP_SECRET are required in lark mode.\n' +
+        `Put them in ${join(PROJECT_ROOT, '.env')} or ${join(STATE_DIR, '.env')}.\n`,
+    );
+    process.exit(1);
+  }
+  if (LARK_ALLOWED_OPEN_IDS.size === 0) {
+    process.stderr.write(
+      'telegram-codex-bridge: ALLOWED_LARK_OPEN_IDS is required for safety.\n',
+    );
+    process.exit(1);
+  }
+}
+
+async function startTelegramBridge() {
+  bot = new Bot(TELEGRAM_TOKEN, {
+    client: {
+      apiRoot: TELEGRAM_API_ROOT,
+      baseFetchConfig: TELEGRAM_FETCH_AGENT ? { agent: TELEGRAM_FETCH_AGENT } : undefined,
+    },
+  });
+
+  bot.command('start', async ctx => {
+    if (ctx.chat?.type !== 'private') return;
+
+    const allowed = isTelegramUserAllowed(ctx.from?.id);
+    const text = allowed
+      ? [
+          'Telegram Codex bridge is online.',
+          '',
+          'Send a normal message to start a Codex session in this chat.',
+          'Later messages resume the same Codex session.',
+          'Commands:',
+          '/status - show current chat status',
+          '/reset - drop this chat session and start fresh',
+        ].join('\n')
+      : [
+          'This bot is not allowlisted for your account.',
+          '',
+          `Your Telegram user ID is: ${ctx.from?.id ?? 'unknown'}`,
+        ].join('\n');
+
+    await ctx.reply(text);
+  });
+
+  bot.command('status', async ctx => {
+    if (ctx.chat?.type !== 'private') return;
+    if (!isTelegramUserAllowed(ctx.from?.id)) {
+      await ctx.reply(
+        `This bot is not allowlisted.\nYour Telegram user ID is: ${ctx.from?.id ?? 'unknown'}`,
+      );
+      return;
+    }
+
+    const text = await renderStatusText(`telegram:${ctx.chat.id}`, {
+      channelLabel: 'telegram',
+      chatId: String(ctx.chat.id),
+      userId: String(ctx.from?.id ?? 'unknown'),
+    });
+    await ctx.reply(text);
+  });
+
+  bot.command('reset', async ctx => {
+    if (ctx.chat?.type !== 'private') return;
+    if (!isTelegramUserAllowed(ctx.from?.id)) return;
+
+    await stateStore.reset(`telegram:${ctx.chat.id}`);
+    await ctx.reply('Session cleared for this chat. The next message will start a fresh Codex session.');
+  });
+
+  bot.on('message:text', async ctx => {
+    if (ctx.chat?.type !== 'private') return;
+    if (!isTelegramUserAllowed(ctx.from?.id)) return;
+    if (ctx.message.text.startsWith('/')) return;
+
+    const chatKey = `telegram:${ctx.chat.id}`;
+    void queueManager.enqueue(
+      chatKey,
+      () => ctx.reply('Previous request is still running. Your message has been queued.'),
+      async () => {
+        await handleBridgeMessage({
+          chatKey,
+          payload: {
+            text: ctx.message.text,
+            attachments: [],
+            imagePaths: [],
+          },
+          createPending: async resume =>
+            await ctx.reply(
+              resume ? 'Received. Resuming Codex session...' : 'Received. Starting Codex session...',
+            ),
+          startProgress: () => startTelegramTyping(String(ctx.chat.id)),
+          sendResponse: async (pending, text) => {
+            await sendTelegramResponse(ctx, pending?.message_id, text);
+          },
+        });
+      },
+    );
+  });
+
+  bot.on('message:photo', async ctx => {
+    if (ctx.chat?.type !== 'private') return;
+    if (!isTelegramUserAllowed(ctx.from?.id)) return;
+
+    const chatKey = `telegram:${ctx.chat.id}`;
+    void queueManager.enqueue(
+      chatKey,
+      () => ctx.reply('Previous request is still running. Your message has been queued.'),
+      async () => {
+        const photo = ctx.message.photo[ctx.message.photo.length - 1];
+        const imagePath = await downloadTelegramFile(photo.file_id, `${photo.file_unique_id}.jpg`);
+        await handleBridgeMessage({
+          chatKey,
+          payload: {
+            text: ctx.message.caption?.trim() || '(photo attached)',
+            attachments: [{ kind: 'photo', path: imagePath, name: imagePath.split('/').pop() ?? 'photo' }],
+            imagePaths: [imagePath],
+          },
+          createPending: async resume =>
+            await ctx.reply(
+              resume ? 'Received. Resuming Codex session...' : 'Received. Starting Codex session...',
+            ),
+          startProgress: () => startTelegramTyping(String(ctx.chat.id)),
+          sendResponse: async (pending, text) => {
+            await sendTelegramResponse(ctx, pending?.message_id, text);
+          },
+        });
+      },
+    );
+  });
+
+  bot.on('message:document', async ctx => {
+    if (ctx.chat?.type !== 'private') return;
+    if (!isTelegramUserAllowed(ctx.from?.id)) return;
+
+    const chatKey = `telegram:${ctx.chat.id}`;
+    void queueManager.enqueue(
+      chatKey,
+      () => ctx.reply('Previous request is still running. Your message has been queued.'),
+      async () => {
+        const doc = ctx.message.document;
+        const filePath = await downloadTelegramFile(
+          doc.file_id,
+          doc.file_name ?? `${doc.file_unique_id}.bin`,
+        );
+        const label = safeName(doc.file_name) ?? filePath.split('/').pop() ?? 'document';
+        await handleBridgeMessage({
+          chatKey,
+          payload: {
+            text: ctx.message.caption?.trim() || `(document: ${label})`,
+            attachments: [{ kind: 'document', path: filePath, name: label }],
+            imagePaths: isImagePath(filePath) ? [filePath] : [],
+          },
+          createPending: async resume =>
+            await ctx.reply(
+              resume ? 'Received. Resuming Codex session...' : 'Received. Starting Codex session...',
+            ),
+          startProgress: () => startTelegramTyping(String(ctx.chat.id)),
+          sendResponse: async (pending, text) => {
+            await sendTelegramResponse(ctx, pending?.message_id, text);
+          },
+        });
+      },
+    );
+  });
+
+  bot.catch(err => {
+    process.stderr.write(
+      `telegram-codex-bridge: handler error: ${err.error?.stack ?? err.error ?? err}\n`,
+    );
+  });
+
+  try {
+    await bot.api.setMyCommands([
+      { command: 'start', description: 'Show help' },
+      { command: 'status', description: 'Show chat status' },
+      { command: 'reset', description: 'Reset this chat session' },
+    ]);
+
+    await bot.start({
+      onStart: info => {
+        process.stderr.write(`telegram-codex-bridge: platform telegram\n`);
+        process.stderr.write(`telegram-codex-bridge: polling as @${info.username}\n`);
+        process.stderr.write(`telegram-codex-bridge: workdir ${CODEX_WORKDIR}\n`);
+        process.stderr.write(`telegram-codex-bridge: state_dir ${STATE_DIR}\n`);
+        process.stderr.write(`telegram-codex-bridge: api_root ${TELEGRAM_API_ROOT}\n`);
+        if (TELEGRAM_PROXY_URL) {
+          process.stderr.write(`telegram-codex-bridge: proxy ${redactUrlAuth(TELEGRAM_PROXY_URL)}\n`);
+        }
+      },
+    });
+  } catch (err) {
+    process.stderr.write(
+      `${formatTelegramStartupError({
+        err,
+        apiRoot: TELEGRAM_API_ROOT,
+        proxyUrl: TELEGRAM_PROXY_URL,
+      })}\n`,
+    );
+    process.exit(1);
+  }
+}
+
+async function startLarkBridge() {
+  larkServer = http.createServer((req, res) => {
+    void handleLarkHttp(req, res).catch(err => {
+      process.stderr.write(`telegram-codex-bridge: lark webhook error: ${err?.stack ?? err}\n`);
+      if (!res.headersSent) {
+        sendJson(res, 500, { code: 500, msg: 'internal error' });
+      } else {
+        res.end();
+      }
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    larkServer.once('error', reject);
+    larkServer.listen(LARK_PORT, LARK_HOST, () => {
+      larkServer.off('error', reject);
+      resolve();
+    });
+  });
+
+  process.stderr.write(`telegram-codex-bridge: platform lark\n`);
+  process.stderr.write(`telegram-codex-bridge: webhook http://${LARK_HOST}:${LARK_PORT}${LARK_WEBHOOK_PATH}\n`);
+  process.stderr.write(`telegram-codex-bridge: workdir ${CODEX_WORKDIR}\n`);
+  process.stderr.write(`telegram-codex-bridge: state_dir ${STATE_DIR}\n`);
+  process.stderr.write(`telegram-codex-bridge: api_root ${LARK_API_ROOT}\n`);
+}
+
+async function handleLarkHttp(req, res) {
+  if (req.method === 'GET' && req.url === '/healthz') {
+    sendJson(res, 200, { ok: true, platform: 'lark' });
+    return;
+  }
+
+  const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+  if (req.method !== 'POST' || pathname !== LARK_WEBHOOK_PATH) {
+    sendJson(res, 404, { code: 404, msg: 'not found' });
+    return;
+  }
+
+  const body = await readJsonBody(req);
+
+  if (body?.encrypt) {
+    sendJson(res, 400, {
+      code: 400,
+      msg: 'encrypted callbacks are not supported; disable Encrypt Key for this webhook',
+    });
+    return;
+  }
+
+  const callbackToken = body?.header?.token ?? body?.token ?? null;
+  if (LARK_VERIFICATION_TOKEN && callbackToken !== LARK_VERIFICATION_TOKEN) {
+    sendJson(res, 403, { code: 403, msg: 'invalid verification token' });
+    return;
+  }
+
+  if (body?.type === 'url_verification' && typeof body.challenge === 'string') {
+    sendJson(res, 200, { challenge: body.challenge });
+    return;
+  }
+
+  const eventType = body?.header?.event_type ?? '';
+  const eventId = body?.header?.event_id ?? null;
+
+  if (eventType !== 'im.message.receive_v1') {
+    sendJson(res, 200, { code: 0 });
+    return;
+  }
+
+  if (eventId && isDuplicateLarkEvent(eventId)) {
+    sendJson(res, 200, { code: 0 });
+    return;
+  }
+
+  sendJson(res, 200, { code: 0 });
+  void processLarkMessageEvent(body).catch(err => {
+    process.stderr.write(`telegram-codex-bridge: lark event processing failed: ${err?.stack ?? err}\n`);
+  });
+}
+
+async function processLarkMessageEvent(body) {
+  const event = body?.event;
+  const message = event?.message;
+  const sender = event?.sender;
+  const chatId = message?.chat_id;
+  const senderOpenId = sender?.sender_id?.open_id;
+  const chatType = message?.chat_type ?? 'unknown';
+
+  if (!chatId || !senderOpenId) {
+    return;
+  }
+  if (!isLarkUserAllowed(senderOpenId)) {
+    await sendLarkText(
+      chatId,
+      `This bot is not allowlisted.\nYour Lark open_id is: ${senderOpenId}`,
+    ).catch(() => {});
+    return;
+  }
+  if (!LARK_ALLOW_GROUPS && chatType !== 'p2p') {
+    return;
+  }
+
+  const parsed = parseLarkMessage(message);
+  if (!parsed) {
+    return;
+  }
+
+  if (parsed.command === 'start') {
+    await sendLarkText(
+      chatId,
+      [
+        'Lark Codex bridge is online.',
         '',
-        'Send a normal message to start a Codex session in this chat.',
+        'Send a normal text message to start a Codex session in this chat.',
         'Later messages resume the same Codex session.',
         'Commands:',
         '/status - show current chat status',
         '/reset - drop this chat session and start fresh',
-      ].join('\n')
-    : [
-        'This bot is not allowlisted for your account.',
-        '',
-        `Your Telegram user ID is: ${ctx.from?.id ?? 'unknown'}`,
-      ].join('\n');
-
-  await ctx.reply(text);
-});
-
-bot.command('status', async ctx => {
-  if (ctx.chat?.type !== 'private') return;
-  if (!isAllowedUser(ctx.from?.id)) {
-    await ctx.reply(`This bot is not allowlisted.\nYour Telegram user ID is: ${ctx.from?.id ?? 'unknown'}`);
+      ].join('\n'),
+    );
     return;
   }
 
-  const state = await readChatState(String(ctx.chat.id));
-  await ctx.reply(
-    [
-      `chat_id: ${ctx.chat.id}`,
-      `user_id: ${ctx.from?.id ?? 'unknown'}`,
-      `session_mode: resume`,
-      `session_id: ${state.sessionId ?? '(none)'}`,
-      `turn_count: ${state.turnCount}`,
-      `local_history_messages: ${state.history.length}`,
-      `workdir: ${CODEX_WORKDIR}`,
-      `state_dir: ${STATE_DIR}`,
-      `full_auto: ${CODEX_FULL_AUTO ? 'on' : 'off'}`,
-      `sandbox: ${CODEX_SANDBOX}`,
-    ].join('\n'),
-  );
-});
+  const chatKey = `lark:${chatId}`;
 
-bot.command('reset', async ctx => {
-  if (ctx.chat?.type !== 'private') return;
-  if (!isAllowedUser(ctx.from?.id)) return;
-
-  const state = await readChatState(String(ctx.chat.id));
-  state.sessionId = null;
-  state.turnCount = 0;
-  state.history = [];
-  await writeChatState(String(ctx.chat.id), state);
-  await ctx.reply('Session cleared for this chat. The next message will start a fresh Codex session.');
-});
-
-bot.on('message:text', async ctx => {
-  if (ctx.chat?.type !== 'private') return;
-  if (!isAllowedUser(ctx.from?.id)) return;
-  if (ctx.message.text.startsWith('/')) return;
-
-  void queueChat(String(ctx.chat.id), async () => {
-    await handleUserMessage(ctx, {
-      text: ctx.message.text,
-      attachments: [],
-      imagePaths: [],
+  if (parsed.command === 'status') {
+    const text = await renderStatusText(chatKey, {
+      channelLabel: 'lark',
+      chatId,
+      userId: senderOpenId,
     });
-  }, ctx);
-});
-
-bot.on('message:photo', async ctx => {
-  if (ctx.chat?.type !== 'private') return;
-  if (!isAllowedUser(ctx.from?.id)) return;
-
-  void queueChat(String(ctx.chat.id), async () => {
-    const photo = ctx.message.photo[ctx.message.photo.length - 1];
-    const imagePath = await downloadTelegramFile(photo.file_id, `${photo.file_unique_id}.jpg`);
-    await handleUserMessage(ctx, {
-      text: ctx.message.caption?.trim() || '(photo attached)',
-      attachments: [{ kind: 'photo', path: imagePath, name: imagePath.split('/').pop() ?? 'photo' }],
-      imagePaths: [imagePath],
-    });
-  }, ctx);
-});
-
-bot.on('message:document', async ctx => {
-  if (ctx.chat?.type !== 'private') return;
-  if (!isAllowedUser(ctx.from?.id)) return;
-
-  void queueChat(String(ctx.chat.id), async () => {
-    const doc = ctx.message.document;
-    const filePath = await downloadTelegramFile(doc.file_id, doc.file_name ?? `${doc.file_unique_id}.bin`);
-    const label = safeName(doc.file_name) ?? filePath.split('/').pop() ?? 'document';
-    await handleUserMessage(ctx, {
-      text: ctx.message.caption?.trim() || `(document: ${label})`,
-      attachments: [{ kind: 'document', path: filePath, name: label }],
-      imagePaths: isImagePath(filePath) ? [filePath] : [],
-    });
-  }, ctx);
-});
-
-bot.catch(err => {
-  process.stderr.write(`telegram-codex-bridge: handler error: ${err.error?.stack ?? err.error ?? err}\n`);
-});
-
-await startBot();
-
-async function queueChat(chatId, fn, ctx) {
-  const wasBusy = chatQueues.has(chatId);
-  if (wasBusy) {
-    await ctx.reply('Previous request is still running. Your message has been queued.');
+    await sendLarkText(chatId, text);
+    return;
   }
 
-  const previous = chatQueues.get(chatId) ?? Promise.resolve();
-  const next = previous
-    .catch(() => {})
-    .then(fn)
-    .catch(err => {
-      process.stderr.write(`telegram-codex-bridge: chat ${chatId} failed: ${err.stack ?? err}\n`);
-    })
-    .finally(() => {
-      if (chatQueues.get(chatId) === next) {
-        chatQueues.delete(chatId);
-      }
-    });
+  if (parsed.command === 'reset') {
+    await stateStore.reset(chatKey);
+    await sendLarkText(
+      chatId,
+      'Session cleared for this chat. The next message will start a fresh Codex session.',
+    );
+    return;
+  }
 
-  chatQueues.set(chatId, next);
-  await next;
+  if (parsed.unsupportedNotice) {
+    await sendLarkText(chatId, parsed.unsupportedNotice);
+    return;
+  }
+
+  void queueManager.enqueue(
+    chatKey,
+    () => sendLarkText(chatId, 'Previous request is still running. Your message has been queued.'),
+    async () => {
+      await handleBridgeMessage({
+        chatKey,
+        payload: {
+          text: parsed.text,
+          attachments: [],
+          imagePaths: [],
+        },
+        createPending: async resume => {
+          const pendingText = resume
+            ? 'Received. Resuming Codex session...'
+            : 'Received. Starting Codex session...';
+          await sendLarkText(chatId, pendingText);
+          return null;
+        },
+        startProgress: () => () => {},
+        sendResponse: async (_pending, text) => {
+          await sendLarkText(chatId, text);
+        },
+      });
+    },
+  );
 }
 
-async function handleUserMessage(ctx, payload) {
-  const chatId = String(ctx.chat.id);
-  const state = await readChatState(chatId);
+function parseLarkMessage(message) {
+  if (message?.message_type !== 'text') {
+    return {
+      unsupportedNotice: `Lark message type "${message?.message_type ?? 'unknown'}" is not supported yet. Send plain text for now.`,
+    };
+  }
 
+  let content;
+  try {
+    content = JSON.parse(message.content ?? '{}');
+  } catch {
+    content = {};
+  }
+
+  const text = String(content.text ?? '').trim();
+  if (!text) {
+    return null;
+  }
+
+  if (text === '/start') return { command: 'start' };
+  if (text === '/status') return { command: 'status' };
+  if (text === '/reset') return { command: 'reset' };
+  return { text };
+}
+
+async function handleBridgeMessage({
+  chatKey,
+  payload,
+  createPending,
+  startProgress,
+  sendResponse,
+}) {
+  const state = await stateStore.read(chatKey);
   const userTurn = {
     role: 'user',
     text: payload.text,
@@ -239,22 +589,25 @@ async function handleUserMessage(ctx, payload) {
     attachments: payload.attachments,
   };
 
-  const prompt = buildCodexPrompt(payload);
-  const pending = await ctx.reply(
-    state.sessionId ? 'Received. Resuming Codex session...' : 'Received. Starting Codex session...',
-  );
-  const stopTyping = startTyping(chatId);
+  const prompt = codexRuntime.buildPrompt({
+    bridgeLabel: BRIDGE_PLATFORM,
+    messageText: payload.text,
+    attachments: payload.attachments,
+    maxPromptChars: MAX_PROMPT_CHARS,
+  });
+  const pending = await createPending(Boolean(state.sessionId));
+  const stopProgress = startProgress();
 
   let finalText;
   let result;
 
   try {
-    result = await runCodex(prompt, payload.imagePaths, state.sessionId);
-    finalText = renderCodexResult(result);
+    result = await codexRuntime.runCodex(prompt, payload.imagePaths, state.sessionId);
+    finalText = codexRuntime.renderResult(result, MAX_OUTPUT_CHARS);
   } catch (err) {
     finalText = `Codex failed to start.\n\n${err instanceof Error ? err.message : String(err)}`;
   } finally {
-    stopTyping();
+    stopProgress();
   }
 
   if (result?.threadId) {
@@ -269,174 +622,34 @@ async function handleUserMessage(ctx, payload) {
     attachments: [],
   });
   state.history = state.history.slice(-50);
-  await writeChatState(chatId, state);
+  await stateStore.write(chatKey, state);
 
-  await sendTelegramResponse(ctx, pending.message_id, finalText);
+  await sendResponse(pending, finalText);
 }
 
-function startTyping(chatId) {
+async function renderStatusText(chatKey, { channelLabel, chatId, userId }) {
+  const state = await stateStore.read(chatKey);
+  return [
+    `channel: ${channelLabel}`,
+    `chat_id: ${chatId}`,
+    `user_id: ${userId}`,
+    `session_mode: resume`,
+    `session_id: ${state.sessionId ?? '(none)'}`,
+    `turn_count: ${state.turnCount}`,
+    `local_history_messages: ${state.history.length}`,
+    `workdir: ${CODEX_WORKDIR}`,
+    `state_dir: ${STATE_DIR}`,
+    `full_auto: ${CODEX_FULL_AUTO ? 'on' : 'off'}`,
+    `sandbox: ${CODEX_SANDBOX}`,
+  ].join('\n');
+}
+
+function startTelegramTyping(chatId) {
   const timer = setInterval(() => {
-    void bot.api.sendChatAction(chatId, 'typing').catch(() => {});
+    void bot?.api.sendChatAction(chatId, 'typing').catch(() => {});
   }, 4000);
 
   return () => clearInterval(timer);
-}
-
-async function runCodex(prompt, imagePaths, sessionId) {
-  const outputPath = join(RUN_DIR, `${Date.now()}-${randomUUID()}.txt`);
-  const args = buildCodexArgs({
-    sessionId,
-    imagePaths,
-    outputPath,
-    config: {
-      fullAuto: CODEX_FULL_AUTO,
-      model: CODEX_MODEL,
-      profile: CODEX_PROFILE,
-      sandbox: CODEX_SANDBOX,
-      skipGitRepoCheck: CODEX_SKIP_GIT_REPO_CHECK,
-      stateDir: STATE_DIR,
-      workdir: CODEX_WORKDIR,
-    },
-  });
-
-  return await new Promise((resolve, reject) => {
-    const child = spawn(CODEX_BIN, args, {
-      cwd: CODEX_WORKDIR,
-      env: process.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    let rawStdout = '';
-    let stdoutBuffer = '';
-    let stderr = '';
-    let threadId = sessionId ?? null;
-    const agentMessages = [];
-    const eventErrors = [];
-
-    child.stdout.on('data', chunk => {
-      stdoutBuffer += chunk.toString('utf8');
-      const lines = stdoutBuffer.split('\n');
-      stdoutBuffer = lines.pop() ?? '';
-      for (const line of lines) {
-        rawStdout = keepTail(`${rawStdout}${line}\n`, 16000);
-        const event = parseJsonLine(line);
-        if (!event) continue;
-        if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
-          threadId = event.thread_id;
-        }
-        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
-          agentMessages.push(event.item.text);
-        }
-        if (event.type === 'error' && typeof event.message === 'string') {
-          eventErrors.push(event.message);
-        }
-      }
-    });
-
-    child.stderr.on('data', chunk => {
-      stderr = keepTail(stderr + chunk.toString('utf8'), 32000);
-    });
-
-    child.on('error', reject);
-
-    child.on('close', async code => {
-      let finalMessage = '';
-
-      if (stdoutBuffer.trim()) {
-        rawStdout = keepTail(`${rawStdout}${stdoutBuffer}\n`, 16000);
-        const event = parseJsonLine(stdoutBuffer);
-        if (event?.type === 'thread.started' && typeof event.thread_id === 'string') {
-          threadId = event.thread_id;
-        }
-        if (event?.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
-          agentMessages.push(event.item.text);
-        }
-        if (event?.type === 'error' && typeof event.message === 'string') {
-          eventErrors.push(event.message);
-        }
-      }
-
-      try {
-        if (existsSync(outputPath)) {
-          finalMessage = (await readFile(outputPath, 'utf8')).trim();
-        }
-      } catch {}
-
-      await rm(outputPath, { force: true }).catch(() => {});
-
-      resolve({
-        code: code ?? 1,
-        rawStdout,
-        stderr,
-        finalMessage,
-        threadId,
-        agentMessages,
-        eventErrors,
-      });
-    });
-
-    child.stdin.end(prompt);
-  });
-}
-
-function renderCodexResult(result) {
-  const pieces = [];
-
-  if (result.finalMessage) {
-    pieces.push(result.finalMessage.trim());
-  }
-
-  if (!result.finalMessage && result.agentMessages.length > 0) {
-    pieces.push(result.agentMessages[result.agentMessages.length - 1].trim());
-  }
-
-  if (result.code !== 0) {
-    const detail = (result.stderr || result.eventErrors.join('\n') || result.rawStdout || '').trim();
-    pieces.push(
-      [
-        `Codex exited with code ${result.code}.`,
-        result.threadId ? 'If this looks like a stale thread, send /reset to start a fresh session.' : '',
-        detail ? keepTail(detail, 3000) : '',
-      ]
-        .filter(Boolean)
-        .join('\n\n'),
-    );
-  }
-
-  let text = pieces.filter(Boolean).join('\n\n');
-  if (!text) {
-    text = 'Codex finished without a final message.';
-  }
-
-  if (text.length > MAX_OUTPUT_CHARS) {
-    text = `${text.slice(0, MAX_OUTPUT_CHARS)}\n\n[truncated]`;
-  }
-
-  return text;
-}
-
-function buildCodexPrompt(payload) {
-  const latestAttachments = payload.attachments?.length
-    ? payload.attachments.map(att => `- ${att.kind}: ${att.path}`).join('\n')
-    : 'None';
-  const prefix = [
-    'You are Codex CLI replying to a Telegram user through an automated bridge.',
-    'Treat the Telegram message as the direct user request.',
-    'Reply in plain text that reads well in Telegram.',
-    'Keep the answer concise unless the user explicitly asks for detail.',
-    `Your working directory is: ${CODEX_WORKDIR}`,
-    `Bridge state directory is: ${STATE_DIR}`,
-    'This chat reuses the same Codex session across turns until /reset is sent.',
-    'If the latest message references a saved local file, inspect that path directly when needed.',
-    '',
-    'Latest message attachments:',
-    latestAttachments,
-    '',
-    'Latest user message:',
-  ].join('\n');
-  const latestMessage = payload.text?.trim() || '(empty message)';
-  const budget = Math.max(1000, MAX_PROMPT_CHARS - prefix.length);
-  return `${prefix}\n${latestMessage.length > budget ? `${latestMessage.slice(0, budget)}\n\n[truncated]` : latestMessage}`;
 }
 
 async function sendTelegramResponse(ctx, pendingMessageId, text) {
@@ -446,15 +659,84 @@ async function sendTelegramResponse(ctx, pendingMessageId, text) {
     chunks.push('(empty response)');
   }
 
-  try {
-    await bot.api.editMessageText(String(ctx.chat.id), pendingMessageId, chunks[0]);
-  } catch {
-    await ctx.reply(chunks[0]);
+  if (pendingMessageId != null) {
+    try {
+      await bot.api.editMessageText(String(ctx.chat.id), pendingMessageId, renderTelegramHtml(chunks[0]), {
+        parse_mode: 'HTML',
+      });
+    } catch {
+      await ctx.reply(renderTelegramHtml(chunks[0]), {
+        parse_mode: 'HTML',
+      });
+    }
+  } else {
+    await ctx.reply(renderTelegramHtml(chunks[0]), {
+      parse_mode: 'HTML',
+    });
   }
 
   for (let i = 1; i < chunks.length; i += 1) {
-    await ctx.reply(chunks[i]);
+    await ctx.reply(renderTelegramHtml(chunks[i]), {
+      parse_mode: 'HTML',
+    });
   }
+}
+
+async function sendLarkText(chatId, text) {
+  const chunks = splitText(text, LARK_CHUNK_LIMIT);
+  const token = await getLarkTenantAccessToken();
+
+  for (const chunk of chunks.length > 0 ? chunks : ['(empty response)']) {
+    const response = await fetch(`${LARK_API_ROOT}/im/v1/messages?receive_id_type=chat_id`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+      body: JSON.stringify({
+        receive_id: chatId,
+        msg_type: 'text',
+        content: JSON.stringify({ text: chunk }),
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.code !== 0) {
+      throw new Error(
+        `Lark send message failed with HTTP ${response.status}: ${data.msg ?? response.statusText}`,
+      );
+    }
+  }
+}
+
+async function getLarkTenantAccessToken() {
+  if (larkAccessTokenCache && larkAccessTokenCache.expiresAt > Date.now() + 60_000) {
+    return larkAccessTokenCache.value;
+  }
+
+  const response = await fetch(`${LARK_API_ROOT}/auth/v3/tenant_access_token/internal`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify({
+      app_id: LARK_APP_ID,
+      app_secret: LARK_APP_SECRET,
+    }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.code !== 0 || typeof data.tenant_access_token !== 'string') {
+    throw new Error(
+      `Lark tenant_access_token request failed with HTTP ${response.status}: ${data.msg ?? response.statusText}`,
+    );
+  }
+
+  larkAccessTokenCache = {
+    value: data.tenant_access_token,
+    expiresAt: Date.now() + Math.max(60, Number(data.expire ?? 7200) - 60) * 1000,
+  };
+  return larkAccessTokenCache.value;
 }
 
 async function downloadTelegramFile(fileId, preferredName) {
@@ -463,9 +745,7 @@ async function downloadTelegramFile(fileId, preferredName) {
     throw new Error('Telegram returned no file_path for this attachment.');
   }
 
-  const buffer = await downloadTelegramBuffer(
-    `${TELEGRAM_FILE_ROOT}/bot${TOKEN}/${file.file_path}`,
-  );
+  const buffer = await downloadTelegramBuffer(`${TELEGRAM_FILE_ROOT}/bot${TELEGRAM_TOKEN}/${file.file_path}`);
   const safeBase = safeStem(preferredName ?? file.file_unique_id ?? 'file');
   const ext = sanitizeExt(extname(preferredName ?? file.file_path));
   const target = join(INBOX_DIR, `${Date.now()}-${safeBase}${ext}`);
@@ -474,33 +754,66 @@ async function downloadTelegramFile(fileId, preferredName) {
   return target;
 }
 
-async function readChatState(chatId) {
-  const path = join(CHAT_DIR, `${chatId}.json`);
-  try {
-    const raw = await readFile(path, 'utf8');
-    const parsed = JSON.parse(raw);
-    return {
-      sessionId:
-        typeof parsed.sessionId === 'string'
-          ? parsed.sessionId
-          : typeof parsed.threadId === 'string'
-            ? parsed.threadId
-            : null,
-      turnCount: Number.isFinite(parsed.turnCount) ? parsed.turnCount : 0,
-      history: Array.isArray(parsed.history) ? parsed.history : [],
-    };
-  } catch {
-    return { sessionId: null, turnCount: 0, history: [] };
+function isTelegramUserAllowed(userId) {
+  return userId != null && TELEGRAM_ALLOWED_USER_IDS.has(String(userId));
+}
+
+function isLarkUserAllowed(openId) {
+  return openId != null && LARK_ALLOWED_OPEN_IDS.has(String(openId));
+}
+
+function isDuplicateLarkEvent(eventId) {
+  const now = Date.now();
+  for (const [key, expiresAt] of seenLarkEvents) {
+    if (expiresAt <= now) {
+      seenLarkEvents.delete(key);
+    }
   }
+
+  if (seenLarkEvents.has(eventId)) {
+    return true;
+  }
+
+  seenLarkEvents.set(eventId, now + 10 * 60 * 1000);
+  return false;
 }
 
-async function writeChatState(chatId, state) {
-  const path = join(CHAT_DIR, `${chatId}.json`);
-  await writeFile(path, `${JSON.stringify(state, null, 2)}\n`);
+async function readJsonBody(req) {
+  return await new Promise((resolve, reject) => {
+    let raw = '';
+
+    req.setEncoding('utf8');
+    req.on('data', chunk => {
+      raw += chunk;
+      if (raw.length > 1024 * 1024) {
+        reject(new Error('Request body too large.'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      try {
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
 }
 
-function isAllowedUser(userId) {
-  return userId != null && ALLOWED_USER_IDS.has(String(userId));
+function sendJson(res, statusCode, body) {
+  const payload = `${JSON.stringify(body)}\n`;
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(payload),
+  });
+  res.end(payload);
+}
+
+function normalizeWebhookPath(value) {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return '/webhook/lark';
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
 function parseCsv(value) {
@@ -531,14 +844,6 @@ function stripTrailingSlash(value) {
   return String(value ?? '').replace(/\/+$/, '');
 }
 
-function parseJsonLine(line) {
-  try {
-    return JSON.parse(line);
-  } catch {
-    return null;
-  }
-}
-
 function registerShutdownHandlers() {
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.once(signal, () => {
@@ -550,48 +855,28 @@ function registerShutdownHandlers() {
 async function shutdown(signal) {
   if (shutdownRequested) return;
   shutdownRequested = true;
-  process.stderr.write(`telegram-codex-bridge: received ${signal}, stopping bot...\n`);
+  process.stderr.write(`telegram-codex-bridge: received ${signal}, stopping bridge...\n`);
 
   try {
-    await bot.stop();
+    if (bot) {
+      await bot.stop();
+    }
+    if (larkServer) {
+      await new Promise((resolve, reject) => {
+        larkServer.close(err => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
   } catch (err) {
     process.stderr.write(`telegram-codex-bridge: shutdown error: ${err?.stack ?? err}\n`);
     process.exit(1);
     return;
   }
 
-  process.stderr.write('telegram-codex-bridge: bot stopped.\n');
+  process.stderr.write('telegram-codex-bridge: bridge stopped.\n');
   process.exit(0);
-}
-
-async function startBot() {
-  try {
-    await bot.api.setMyCommands([
-      { command: 'start', description: 'Show help' },
-      { command: 'status', description: 'Show chat status' },
-      { command: 'reset', description: 'Reset this chat session' },
-    ]);
-
-    await bot.start({
-      onStart: info => {
-        process.stderr.write(`telegram-codex-bridge: polling as @${info.username}\n`);
-        process.stderr.write(`telegram-codex-bridge: workdir ${CODEX_WORKDIR}\n`);
-        process.stderr.write(`telegram-codex-bridge: api_root ${TELEGRAM_API_ROOT}\n`);
-        if (TELEGRAM_PROXY_URL) {
-          process.stderr.write(`telegram-codex-bridge: proxy ${redactUrlAuth(TELEGRAM_PROXY_URL)}\n`);
-        }
-      },
-    });
-  } catch (err) {
-    process.stderr.write(
-      `${formatTelegramStartupError({
-        err,
-        apiRoot: TELEGRAM_API_ROOT,
-        proxyUrl: TELEGRAM_PROXY_URL,
-      })}\n`,
-    );
-    process.exit(1);
-  }
 }
 
 function buildTelegramFetchAgent(proxyUrl) {
