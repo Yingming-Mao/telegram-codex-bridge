@@ -35,6 +35,27 @@ If you omit `BRIDGE_PLATFORM`, the bridge will auto-detect:
 
 ## Feishu / Lark
 
+If this is your first Feishu setup, use this shortest path:
+
+1. Open <https://open.feishu.cn/>
+2. Create a self-built app
+3. Enable bot capability
+4. Add messaging permissions
+5. In `Events and Callbacks`, choose `Receive events through persistent connection`
+6. Subscribe to `im.message.receive_v1`
+7. Publish the app
+8. Configure the root `.env`
+9. Run `npm start`
+10. Set `FEISHU_ALLOW_FROM=ou_xxx` first; after you DM the bot, it will reply with your real `open_id`
+
+Minimum required steps:
+
+- Create the app
+- Enable bot capability
+- Subscribe to `im.message.receive_v1`
+- Publish the app
+- Fill `.env`
+
 Example:
 
 ```dotenv
@@ -101,6 +122,7 @@ Features:
 - `CODEX_BIN`
 - `CODEX_APPROVAL_MODE`
 - `CODEX_SANDBOX_MODE`
+- `CODEX_BYPASS_APPROVALS_AND_SANDBOX`
 - `CODEX_MODEL`
 - `CODEX_PROFILE`
 - `CODEX_SKIP_GIT_REPO_CHECK`
@@ -114,6 +136,7 @@ These two variables control how the bridge invokes `codex exec`:
 
 - `CODEX_APPROVAL_MODE` maps to `codex exec -a`
 - `CODEX_SANDBOX_MODE` maps to `codex exec -s`
+- `CODEX_BYPASS_APPROVALS_AND_SANDBOX=1` maps to `codex --dangerously-bypass-approvals-and-sandbox exec ...`
 
 Recommended default:
 
@@ -141,6 +164,24 @@ Use this only if you explicitly want the bridge to run Codex without interactive
 - `CODEX_SANDBOX_MODE=danger-full-access` gives Codex broad host access
 - This is convenient for automation, but it is the highest-risk setup in this repo
 - Do not enable it on a machine you do not fully trust with remote bot-triggered actions
+
+Fully bypass Codex approvals and sandbox:
+
+```dotenv
+CODEX_BYPASS_APPROVALS_AND_SANDBOX=1
+```
+
+When this is enabled, the bridge sends:
+
+```bash
+codex --dangerously-bypass-approvals-and-sandbox exec ...
+```
+
+Notes:
+
+- This is more dangerous than `CODEX_APPROVAL_MODE=never` plus `CODEX_SANDBOX_MODE=danger-full-access`
+- When enabled, it takes precedence over `CODEX_APPROVAL_MODE` and `CODEX_SANDBOX_MODE`
+- Use it only if the machine is already externally sandboxed or you intentionally want zero Codex-side protections
 
 Compatibility:
 

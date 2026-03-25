@@ -54,6 +54,9 @@ const CODEX_BIN = process.env.CODEX_BIN ?? 'codex';
 const CODEX_WORKDIR = process.env.CODEX_WORKDIR ?? resolve(PROJECT_ROOT, '..');
 const CODEX_MODEL = process.env.CODEX_MODEL;
 const CODEX_PROFILE = process.env.CODEX_PROFILE;
+const CODEX_BYPASS_APPROVALS_AND_SANDBOX = parseBool(
+  process.env.CODEX_BYPASS_APPROVALS_AND_SANDBOX ?? '0',
+);
 const CODEX_APPROVAL_MODE = normalizeCodexApprovalMode(
   process.env.CODEX_APPROVAL_MODE,
   process.env.CODEX_FULL_AUTO,
@@ -77,6 +80,7 @@ const queueManager = createChatQueueManager({ logPrefix: 'codex-feishu-bridge' }
 const codexRuntime = createCodexRuntime({
   bin: CODEX_BIN,
   approvalMode: CODEX_APPROVAL_MODE,
+  bypassApprovalsAndSandbox: CODEX_BYPASS_APPROVALS_AND_SANDBOX,
   model: CODEX_MODEL,
   profile: CODEX_PROFILE,
   runDir: RUN_DIR,
@@ -212,13 +216,21 @@ async function processMessageEvent(payload) {
   }
 
   if (message.message_type !== 'text') {
-    await sendText(chatId, `Unsupported message type "${message.message_type ?? 'unknown'}". Send plain text.`).catch(() => {});
+    await safeSendText(
+      chatId,
+      `Unsupported message type "${message.message_type ?? 'unknown'}". Send plain text.`,
+      'unsupported_message_type',
+    );
     return;
   }
 
   if (chatType === 'p2p') {
     if (!FEISHU_ALLOW_FROM.has(senderOpenId)) {
-      await sendText(chatId, `This bot is not allowlisted.\nYour open_id is: ${senderOpenId}`).catch(() => {});
+      await safeSendText(
+        chatId,
+        `This bot is not allowlisted.\nYour open_id is: ${senderOpenId}`,
+        'allowlist_reject',
+      );
       return;
     }
   } else if (!isGroupAllowed(chatId)) {
@@ -371,6 +383,7 @@ async function renderStatusText(chatKey, chatId, userId) {
     `local_history_messages: ${state.history.length}`,
     `workdir: ${CODEX_WORKDIR}`,
     `state_dir: ${STATE_DIR}`,
+    `bypass_approvals_and_sandbox: ${CODEX_BYPASS_APPROVALS_AND_SANDBOX ? 'on' : 'off'}`,
     `approval_mode: ${CODEX_APPROVAL_MODE}`,
     `sandbox_mode: ${CODEX_SANDBOX_MODE}`,
     `domain: ${FEISHU_DOMAIN}`,
@@ -404,6 +417,17 @@ async function sendText(chatId, text) {
   }
 
   return lastMessageId;
+}
+
+async function safeSendText(chatId, text, reason) {
+  try {
+    return await sendText(chatId, text);
+  } catch (err) {
+    process.stderr.write(
+      `codex-feishu-bridge: reply failed (${reason}) for chat ${chatId}: ${err?.stack ?? err}\n`,
+    );
+    return null;
+  }
 }
 
 async function updateText(messageId, text) {

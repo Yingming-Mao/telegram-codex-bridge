@@ -5,8 +5,12 @@ function buildWritableRootsOverride(writableRoots) {
 export function buildCodexArgs({ sessionId, imagePaths, outputPath, config }) {
   const args = [];
 
-  if (config.approvalMode) args.push('-a', config.approvalMode);
-  if (config.sandboxMode) args.push('-s', config.sandboxMode);
+  if (config.bypassApprovalsAndSandbox) {
+    args.push('--dangerously-bypass-approvals-and-sandbox');
+  } else {
+    if (config.approvalMode) args.push('-a', config.approvalMode);
+    if (config.sandboxMode) args.push('-s', config.sandboxMode);
+  }
   args.push('exec');
 
   if (sessionId) {

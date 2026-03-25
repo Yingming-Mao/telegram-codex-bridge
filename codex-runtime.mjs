@@ -82,6 +82,7 @@ export function createCodexRuntime(config) {
         outputPath,
         config: {
           approvalMode: config.approvalMode,
+          bypassApprovalsAndSandbox: config.bypassApprovalsAndSandbox,
           model: config.model,
           profile: config.profile,
           sandboxMode: config.sandboxMode,

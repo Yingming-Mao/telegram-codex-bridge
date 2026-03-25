@@ -9,6 +9,7 @@ import {
 
 const BASE_CONFIG = {
   approvalMode: 'never',
+  bypassApprovalsAndSandbox: false,
   model: 'gpt-5.4',
   profile: 'default',
   sandboxMode: 'workspace-write',
@@ -45,6 +46,38 @@ test('buildCodexArgs adds --add-dir on first exec', () => {
     '--skip-git-repo-check',
     '-i',
     '/tmp/telegram-codex-state/inbox/photo.png',
+    '-o',
+    '/tmp/out.txt',
+    '-',
+  ]);
+});
+
+test('buildCodexArgs uses dangerous bypass flag when requested', () => {
+  const args = buildCodexArgs({
+    sessionId: null,
+    imagePaths: [],
+    outputPath: '/tmp/out.txt',
+    config: {
+      ...BASE_CONFIG,
+      bypassApprovalsAndSandbox: true,
+    },
+  });
+
+  assert.deepEqual(args, [
+    '--dangerously-bypass-approvals-and-sandbox',
+    'exec',
+    '-C',
+    '/workspace/project',
+    '--json',
+    '--color',
+    'never',
+    '--add-dir',
+    '/tmp/telegram-codex-state',
+    '-m',
+    'gpt-5.4',
+    '-p',
+    'default',
+    '--skip-git-repo-check',
     '-o',
     '/tmp/out.txt',
     '-',

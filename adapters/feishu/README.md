@@ -212,13 +212,14 @@ CODEX_SANDBOX_MODE=workspace-write
 
 说明：
 
-- `FEISHU_ALLOW_FROM` 必填
+- `FEISHU_ALLOW_FROM` 这里先随便写一个占位值也可以，后面机器人会把你的真实 `open_id` 回给你
 - `FEISHU_VERIFICATION_TOKEN` 这里不需要
 
 关于 Codex 执行模式：
 
 - `CODEX_APPROVAL_MODE` 对应 `codex exec -a`
 - `CODEX_SANDBOX_MODE` 对应 `codex exec -s`
+- `CODEX_BYPASS_APPROVALS_AND_SANDBOX=1` 对应 `codex --dangerously-bypass-approvals-and-sandbox exec ...`
 - 推荐默认值是：
 
 ```dotenv
@@ -234,6 +235,13 @@ CODEX_SANDBOX_MODE=danger-full-access
 ```
 
 - 这会让 Codex 不再请求审批，并获得更高权限，风险明显更高
+- 如果你要连 Codex 自己的沙箱也一起关掉，可以单独配置：
+
+```dotenv
+CODEX_BYPASS_APPROVALS_AND_SANDBOX=1
+```
+
+- 这个开关优先级更高，开启后会直接绕过普通审批和沙箱参数
 
 ### 如果你走 webhook
 
@@ -254,6 +262,30 @@ CODEX_SANDBOX_MODE=workspace-write
 ## 6. `FEISHU_ALLOW_FROM` 怎么写
 
 这个字段写的是允许使用机器人的飞书用户 `open_id`。
+
+最简单的拿法不是去查接口，而是直接让机器人告诉你。
+
+做法：
+
+1. 先在 `.env` 里随便写：
+
+```dotenv
+FEISHU_ALLOW_FROM=ou_xxx
+```
+
+2. 启动 bridge
+3. 私聊机器人发一句话
+4. 机器人会回：
+
+```text
+This bot is not allowlisted.
+Your open_id is: ou_xxxxxxxxxxxxx
+```
+
+5. 把返回的 `open_id` 填回 `.env`
+6. 重启服务
+
+所以这里可以先“胡写”，只要机器人本身能正常收发消息，它就会把你的真实 `open_id` 返回给你。
 
 单个人：
 
@@ -386,9 +418,17 @@ FEISHU_STREAM_UPDATE_MS=800
 - 应用是否已经发布
 - 权限是否已经审批通过
 - 是否订阅了 `im.message.receive_v1`
+- 是否开启了机器人能力
+- 是否有 `im:message:send_as_bot`
 - `FEISHU_ALLOW_FROM` 里是否是正确的 `open_id`
 - `node server.mjs` 是否正常启动
 - `codex` 在本机是否能跑
+
+如果你是第一次拿 `open_id`，注意一点：
+
+- 先随便写 `FEISHU_ALLOW_FROM=ou_xxx` 没问题
+- 但前提是机器人本身必须已经有能力把消息回出来
+- 如果它完全不回，那不是 allowlist 的问题，通常是发布、权限或机器人能力没开
 
 ### 3. 为什么 `FEISHU_VERIFICATION_TOKEN` 不需要？
 

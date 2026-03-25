@@ -52,6 +52,9 @@ const CODEX_BIN = process.env.CODEX_BIN ?? 'codex';
 const CODEX_WORKDIR = process.env.CODEX_WORKDIR ?? resolve(PROJECT_ROOT, '..');
 const CODEX_MODEL = process.env.CODEX_MODEL;
 const CODEX_PROFILE = process.env.CODEX_PROFILE;
+const CODEX_BYPASS_APPROVALS_AND_SANDBOX = parseBool(
+  process.env.CODEX_BYPASS_APPROVALS_AND_SANDBOX ?? '0',
+);
 const CODEX_APPROVAL_MODE = normalizeCodexApprovalMode(
   process.env.CODEX_APPROVAL_MODE,
   process.env.CODEX_FULL_AUTO,
@@ -103,6 +106,7 @@ const queueManager = createChatQueueManager({ logPrefix: 'telegram-codex-bridge'
 const codexRuntime = createCodexRuntime({
   bin: CODEX_BIN,
   approvalMode: CODEX_APPROVAL_MODE,
+  bypassApprovalsAndSandbox: CODEX_BYPASS_APPROVALS_AND_SANDBOX,
   model: CODEX_MODEL,
   profile: CODEX_PROFILE,
   runDir: RUN_DIR,
@@ -645,6 +649,7 @@ async function renderStatusText(chatKey, { channelLabel, chatId, userId }) {
     `local_history_messages: ${state.history.length}`,
     `workdir: ${CODEX_WORKDIR}`,
     `state_dir: ${STATE_DIR}`,
+    `bypass_approvals_and_sandbox: ${CODEX_BYPASS_APPROVALS_AND_SANDBOX ? 'on' : 'off'}`,
     `approval_mode: ${CODEX_APPROVAL_MODE}`,
     `sandbox_mode: ${CODEX_SANDBOX_MODE}`,
   ].join('\n');

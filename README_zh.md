@@ -35,6 +35,27 @@ npm start
 
 ## 飞书 / Lark
 
+如果你是第一次配飞书，先按这个最短流程走：
+
+1. 打开飞书开放平台 <https://open.feishu.cn/>
+2. 创建“企业自建应用”
+3. 开启“机器人能力”
+4. 配消息相关权限
+5. 在 `Events and Callbacks` 里选择左边 `Receive events through persistent connection`
+6. 订阅事件 `im.message.receive_v1`
+7. 发布应用
+8. 在仓库根目录配置 `.env`
+9. 运行 `npm start`
+10. 先把 `FEISHU_ALLOW_FROM=ou_xxx` 随便写上，私聊机器人后，它会把你的真实 `open_id` 回给你
+
+最小必做项：
+
+- 创建飞书应用
+- 开机器人能力
+- 订阅 `im.message.receive_v1`
+- 发布应用
+- 填 `.env`
+
 示例：
 
 ```dotenv
@@ -75,6 +96,10 @@ FEISHU_WEBHOOK_PATH=/feishu/events
 
 更详细的飞书接入说明还在 [adapters/feishu/README.md](adapters/feishu/README.md)，但现在你已经不需要去那个子目录启动了。只要根目录 `BRIDGE_PLATFORM=feishu`，`npm start` 会自动切到飞书 adapter。
 
+如果你是第一次配飞书，先看这份更短的入门文档：
+
+- [docs/feishu-quickstart.zh.md](docs/feishu-quickstart.zh.md)
+
 ## Telegram
 
 示例：
@@ -101,6 +126,7 @@ ALLOWED_TELEGRAM_USER_IDS=123456789
 - `CODEX_BIN`
 - `CODEX_APPROVAL_MODE`
 - `CODEX_SANDBOX_MODE`
+- `CODEX_BYPASS_APPROVALS_AND_SANDBOX`
 - `CODEX_MODEL`
 - `CODEX_PROFILE`
 - `CODEX_SKIP_GIT_REPO_CHECK`
@@ -114,6 +140,7 @@ ALLOWED_TELEGRAM_USER_IDS=123456789
 
 - `CODEX_APPROVAL_MODE` 对应 `codex exec -a`
 - `CODEX_SANDBOX_MODE` 对应 `codex exec -s`
+- `CODEX_BYPASS_APPROVALS_AND_SANDBOX=1` 对应 `codex --dangerously-bypass-approvals-and-sandbox exec ...`
 
 推荐默认值：
 
@@ -141,6 +168,24 @@ CODEX_SANDBOX_MODE=danger-full-access
 - `CODEX_SANDBOX_MODE=danger-full-access` 表示给 Codex 更广的主机访问权限
 - 这对自动化很方便，但也是这个仓库里风险最高的一档配置
 - 不要在你不愿意让远程 bot 指令直接操作的机器上启用它
+
+完全绕过 Codex 审批和沙箱：
+
+```dotenv
+CODEX_BYPASS_APPROVALS_AND_SANDBOX=1
+```
+
+开启后，bridge 会直接传：
+
+```bash
+codex --dangerously-bypass-approvals-and-sandbox exec ...
+```
+
+说明：
+
+- 这比 `CODEX_APPROVAL_MODE=never` 加 `CODEX_SANDBOX_MODE=danger-full-access` 还更危险
+- 开启后，它会覆盖 `CODEX_APPROVAL_MODE` 和 `CODEX_SANDBOX_MODE`
+- 只建议在你明确知道自己在做什么，或者机器本身已经被外层环境隔离时使用
 
 兼容说明：
 
