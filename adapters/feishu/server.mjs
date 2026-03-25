@@ -2,7 +2,7 @@
 
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { chmodSync, readFileSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,12 +43,15 @@ const FEISHU_ALLOW_FROM = new Set(parseCsv(process.env.FEISHU_ALLOW_FROM));
 const FEISHU_GROUP_POLICY = normalizeGroupPolicy(process.env.FEISHU_GROUP_POLICY ?? 'open');
 const FEISHU_GROUP_ALLOW_FROM = new Set(parseCsv(process.env.FEISHU_GROUP_ALLOW_FROM));
 const FEISHU_REQUIRE_MENTION = parseBool(process.env.FEISHU_REQUIRE_MENTION ?? '0');
+const FEISHU_BOT_OPEN_ID = process.env.FEISHU_BOT_OPEN_ID?.trim() || null;
+const FEISHU_USER_WORKDIR_MAP = parseKeyValueMap(process.env.FEISHU_USER_WORKDIR_MAP);
 const FEISHU_RESOLVE_SENDER_NAMES = parseBool(process.env.FEISHU_RESOLVE_SENDER_NAMES ?? '0');
 const FEISHU_STREAMING = parseBool(process.env.FEISHU_STREAMING ?? '1');
 const FEISHU_STREAM_UPDATE_MS = positiveInt(process.env.FEISHU_STREAM_UPDATE_MS, 800);
 
 const CHAT_DIR = join(STATE_DIR, 'chats');
 const RUN_DIR = join(STATE_DIR, 'runs');
+const BOT_OPEN_ID_PATH = join(STATE_DIR, 'bot-open-id.txt');
 
 const CODEX_BIN = process.env.CODEX_BIN ?? 'codex';
 const CODEX_WORKDIR = process.env.CODEX_WORKDIR ?? resolve(PROJECT_ROOT, '..');
@@ -75,6 +78,7 @@ let accessTokenCache = null;
 let server = null;
 let wsClient = null;
 let shutdownRequested = false;
+let effectiveBotOpenId = FEISHU_BOT_OPEN_ID;
 const stateStore = createChatStateStore(CHAT_DIR);
 const queueManager = createChatQueueManager({ logPrefix: 'codex-feishu-bridge' });
 const codexRuntime = createCodexRuntime({
@@ -98,6 +102,7 @@ await Promise.all([
   mkdir(CHAT_DIR, { recursive: true }),
   mkdir(RUN_DIR, { recursive: true }),
 ]);
+effectiveBotOpenId = effectiveBotOpenId ?? (await loadRememberedBotOpenId());
 
 const eventDispatcher = new Lark.EventDispatcher({}).register({
   'im.message.receive_v1': async data => {
@@ -238,11 +243,12 @@ async function processMessageEvent(payload) {
   }
 
   const parsed = parseIncomingText(message);
+  await rememberBotOpenIdCandidate(parsed);
   if (!parsed.text) {
     return;
   }
 
-  if (chatType !== 'p2p' && FEISHU_REQUIRE_MENTION && !parsed.hasMention) {
+  if (chatType !== 'p2p' && FEISHU_REQUIRE_MENTION && !isBotMentioned(parsed)) {
     return;
   }
 
@@ -262,9 +268,10 @@ async function processMessageEvent(payload) {
     return;
   }
 
-  const chatKey = `feishu:${chatType}:${chatId}`;
+  const effectiveWorkdir = resolveWorkdirForSender(senderOpenId);
+  const chatKey = buildChatKey(chatType, chatId, senderOpenId, effectiveWorkdir);
   if (parsed.command === 'status') {
-    await sendText(chatId, await renderStatusText(chatKey, chatId, senderOpenId));
+    await sendText(chatId, await renderStatusText(chatKey, chatId, senderOpenId, effectiveWorkdir));
     return;
   }
   if (parsed.command === 'reset') {
@@ -313,10 +320,12 @@ async function processMessageEvent(payload) {
               payload.senderName ? `Sender label: ${payload.senderName}` : '',
             ],
             maxPromptChars: MAX_PROMPT_CHARS,
+            workdir: effectiveWorkdir,
           }),
           [],
           state.sessionId,
           progress,
+          { workdir: effectiveWorkdir },
         );
         finalText = codexRuntime.renderResult(result, MAX_OUTPUT_CHARS);
       } catch (err) {
@@ -359,19 +368,59 @@ function parseIncomingText(message) {
 
   const rawText = String(content.text ?? '').trim();
   const text = rawText.replace(/<at[^>]*>.*?<\/at>/g, ' ').replace(/\s+/g, ' ').trim();
-  const hasMention =
-    Array.isArray(message.mentions) && message.mentions.length > 0
-      ? true
-      : /<at\b/i.test(rawText);
+  const mentions = Array.isArray(message.mentions) ? message.mentions : [];
+  const hasMention = mentions.length > 0 ? true : /<at\b/i.test(rawText);
+  const mentionedOpenIds = mentions
+    .map(mention => mention?.id?.open_id)
+    .filter(openId => typeof openId === 'string' && openId.length > 0);
 
   return {
     text,
     hasMention,
+    mentionedOpenIds,
     command: text === '/start' || text === '/status' || text === '/reset' ? text.slice(1) : null,
   };
 }
 
-async function renderStatusText(chatKey, chatId, userId) {
+function isBotMentioned(parsed) {
+  if (!parsed.hasMention) return false;
+  if (!effectiveBotOpenId) return true;
+  return parsed.mentionedOpenIds.includes(effectiveBotOpenId);
+}
+
+function buildChatKey(chatType, chatId, senderOpenId, workdir) {
+  if (chatType === 'p2p') {
+    return `feishu:${chatType}:${chatId}:${workdir}`;
+  }
+  return `feishu:${chatType}:${chatId}:${senderOpenId}:${workdir}`;
+}
+
+async function loadRememberedBotOpenId() {
+  try {
+    const value = (await readFile(BOT_OPEN_ID_PATH, 'utf8')).trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+async function rememberBotOpenIdCandidate(parsed) {
+  if (effectiveBotOpenId) return;
+  if (!parsed.hasMention) return;
+  if (parsed.mentionedOpenIds.length !== 1) return;
+  const candidate = parsed.mentionedOpenIds[0];
+  effectiveBotOpenId = candidate;
+  try {
+    await writeFile(BOT_OPEN_ID_PATH, `${candidate}\n`);
+    process.stderr.write(`codex-feishu-bridge: remembered bot_open_id ${candidate}\n`);
+  } catch (err) {
+    process.stderr.write(
+      `codex-feishu-bridge: failed to persist bot_open_id ${candidate}: ${err?.stack ?? err}\n`,
+    );
+  }
+}
+
+async function renderStatusText(chatKey, chatId, userId, effectiveWorkdir) {
   const state = await stateStore.read(chatKey);
   return [
     'channel: feishu',
@@ -381,7 +430,8 @@ async function renderStatusText(chatKey, chatId, userId) {
     `session_id: ${state.sessionId ?? '(none)'}`,
     `turn_count: ${state.turnCount}`,
     `local_history_messages: ${state.history.length}`,
-    `workdir: ${CODEX_WORKDIR}`,
+    `workdir: ${effectiveWorkdir}`,
+    `default_workdir: ${CODEX_WORKDIR}`,
     `state_dir: ${STATE_DIR}`,
     `bypass_approvals_and_sandbox: ${CODEX_BYPASS_APPROVALS_AND_SANDBOX ? 'on' : 'off'}`,
     `approval_mode: ${CODEX_APPROVAL_MODE}`,
@@ -637,6 +687,25 @@ function normalizeCodexApprovalMode(explicitValue, legacyFullAutoValue) {
 function normalizeCodexSandboxMode(explicitValue, legacySandboxValue) {
   const value = (explicitValue ?? legacySandboxValue ?? 'workspace-write').trim();
   return value || 'workspace-write';
+}
+
+function parseKeyValueMap(value) {
+  const map = new Map();
+  for (const entry of String(value ?? '').split(';')) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.indexOf('=');
+    if (separator <= 0) continue;
+    const key = trimmed.slice(0, separator).trim();
+    const mappedValue = trimmed.slice(separator + 1).trim();
+    if (!key || !mappedValue) continue;
+    map.set(key, mappedValue);
+  }
+  return map;
+}
+
+function resolveWorkdirForSender(senderOpenId) {
+  return FEISHU_USER_WORKDIR_MAP.get(senderOpenId) ?? CODEX_WORKDIR;
 }
 
 function parseCsv(value) {

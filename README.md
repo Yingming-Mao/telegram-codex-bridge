@@ -91,8 +91,27 @@ Feishu features:
 - Private-chat allowlist
 - Group chat enabled by default once the bot is added
 - Optional group allowlist and optional `@mention` gating
+- Group chats use separate Codex sessions per sender
+- Per-sender `workdir` overrides are supported
 - Approximate streaming updates from Codex JSON events
 - `/start`, `/status`, `/reset`
+
+If you enable `FEISHU_REQUIRE_MENTION=1`:
+
+- You can set `FEISHU_BOT_OPEN_ID` manually
+- Or leave it unset and let the bridge auto-learn it from the first clear group `@bot` event
+
+If you want different senders to land in different project directories, set:
+
+```dotenv
+FEISHU_USER_WORKDIR_MAP=ou_alice=/work/project-a;ou_bob=/work/project-b
+```
+
+Notes:
+
+- key = sender `open_id`
+- value = the effective `CODEX_WORKDIR` for that sender
+- senders not listed still use the global `CODEX_WORKDIR`
 
 Detailed Feishu setup remains in [adapters/feishu/README.md](adapters/feishu/README.md), but you no longer need to start from that subdirectory. Root `npm start` will hand off to the Feishu adapter when `BRIDGE_PLATFORM=feishu`.
 

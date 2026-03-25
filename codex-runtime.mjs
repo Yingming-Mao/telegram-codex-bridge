@@ -74,7 +74,14 @@ export function createChatQueueManager({ logPrefix }) {
 
 export function createCodexRuntime(config) {
   return {
-    async runCodex(prompt, imagePaths, sessionId, progress = createNullProgress()) {
+    async runCodex(
+      prompt,
+      imagePaths,
+      sessionId,
+      progress = createNullProgress(),
+      options = {},
+    ) {
+      const effectiveWorkdir = options.workdir ?? config.workdir;
       const outputPath = join(config.runDir, `${Date.now()}-${randomUUID()}.txt`);
       const args = buildCodexArgs({
         sessionId,
@@ -88,13 +95,13 @@ export function createCodexRuntime(config) {
           sandboxMode: config.sandboxMode,
           skipGitRepoCheck: config.skipGitRepoCheck,
           stateDir: config.stateDir,
-          workdir: config.workdir,
+          workdir: effectiveWorkdir,
         },
       });
 
       return await new Promise((resolve, reject) => {
         const child = spawn(config.bin, args, {
-          cwd: config.workdir,
+          cwd: effectiveWorkdir,
           env: process.env,
           stdio: ['pipe', 'pipe', 'pipe'],
         });
@@ -239,6 +246,7 @@ export function createCodexRuntime(config) {
       attachments = [],
       extraContext = [],
       maxPromptChars,
+      workdir = config.workdir,
     }) {
       const latestAttachments = attachments.length
         ? attachments.map(att => `- ${att.kind}: ${att.path}`).join('\n')
@@ -248,7 +256,7 @@ export function createCodexRuntime(config) {
         'Treat the latest bridge message as the direct user request.',
         'Reply in plain text that reads well in chat.',
         'Keep the answer concise unless the user explicitly asks for detail.',
-        `Your working directory is: ${config.workdir}`,
+        `Your working directory is: ${workdir}`,
         `Bridge state directory is: ${config.stateDir}`,
         'This chat reuses the same Codex session across turns until /reset is sent.',
         'If the latest message references a saved local file, inspect that path directly when needed.',

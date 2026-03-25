@@ -91,8 +91,27 @@ FEISHU_WEBHOOK_PATH=/feishu/events
 - 私聊 allowlist
 - 默认拉进群就能用
 - 也支持按群收紧和可选 `@mention` 触发
+- 群聊里默认按“群 + 发言人”各自复用 session
+- 支持按发言人覆盖 `workdir`
 - 基于 Codex JSON 事件流的近似 streaming
 - `/start`、`/status`、`/reset`
+
+如果你把 `FEISHU_REQUIRE_MENTION=1` 打开了：
+
+- 可以手动配置 `FEISHU_BOT_OPEN_ID`
+- 也可以不填，bridge 会在第一次明确的群 `@机器人` 事件里自动记住它
+
+如果你想让不同发言人默认进不同项目目录，可以配置：
+
+```dotenv
+FEISHU_USER_WORKDIR_MAP=ou_alice=/work/project-a;ou_bob=/work/project-b
+```
+
+说明：
+
+- key 是发言人的 `open_id`
+- value 是这个人对应的 `CODEX_WORKDIR`
+- 没配到的人仍然走全局 `CODEX_WORKDIR`
 
 更详细的飞书接入说明还在 [adapters/feishu/README.md](adapters/feishu/README.md)，但现在你已经不需要去那个子目录启动了。只要根目录 `BRIDGE_PLATFORM=feishu`，`npm start` 会自动切到飞书 adapter。
 

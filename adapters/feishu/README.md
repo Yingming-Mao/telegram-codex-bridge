@@ -25,6 +25,8 @@
 - 支持 `/start`、`/status`、`/reset`
 - 支持私聊 allowlist
 - 支持群策略和 `@mention`
+- 群聊里按“群 + 发言人”分别维护会话
+- 支持按发言人覆盖默认工作目录
 - 支持基于 Codex JSON 事件流的近似 streaming
 
 ## 当前限制
@@ -388,6 +390,37 @@ FEISHU_REQUIRE_MENTION=0
 ```dotenv
 FEISHU_REQUIRE_MENTION=1
 ```
+
+更严格一点的话，可以再配：
+
+```dotenv
+FEISHU_BOT_OPEN_ID=ou_xxx
+```
+
+这样在 `FEISHU_REQUIRE_MENTION=1` 时，就只会对 `@机器人` 生效，不会因为群里有人 `@` 了别的成员也触发。
+
+如果你不想手工找这个值，也可以不填：
+
+- bridge 会在第一次明确的群 `@机器人` 事件里自动记住 bot 的 `open_id`
+- 之后再判断 `FEISHU_REQUIRE_MENTION=1` 时，就会按这个自动学到的值精确匹配
+- 手工配置的 `FEISHU_BOT_OPEN_ID` 仍然优先级更高
+
+另外，群聊里的会话现在默认是按“群 + 发言人”切开的：
+
+- 同一个群里的不同人，各自复用自己的 Codex session
+- 不再所有人共用一条群会话
+
+如果你还想让不同发言人默认进入不同项目目录，可以再配：
+
+```dotenv
+FEISHU_USER_WORKDIR_MAP=ou_alice=/work/project-a;ou_bob=/work/project-b
+```
+
+说明：
+
+- 左边是发言人的 `open_id`
+- 右边是这个人对应的工作目录
+- 没配到的人仍然使用全局 `CODEX_WORKDIR`
 
 ## 11. Streaming 说明
 
