@@ -40,9 +40,9 @@ const FEISHU_WEBHOOK_HOST = process.env.FEISHU_WEBHOOK_HOST ?? '127.0.0.1';
 const FEISHU_WEBHOOK_PORT = positiveInt(process.env.FEISHU_WEBHOOK_PORT, 3000);
 const FEISHU_WEBHOOK_PATH = normalizePath(process.env.FEISHU_WEBHOOK_PATH ?? '/feishu/events');
 const FEISHU_ALLOW_FROM = new Set(parseCsv(process.env.FEISHU_ALLOW_FROM));
-const FEISHU_GROUP_POLICY = normalizeGroupPolicy(process.env.FEISHU_GROUP_POLICY ?? 'disabled');
+const FEISHU_GROUP_POLICY = normalizeGroupPolicy(process.env.FEISHU_GROUP_POLICY ?? 'open');
 const FEISHU_GROUP_ALLOW_FROM = new Set(parseCsv(process.env.FEISHU_GROUP_ALLOW_FROM));
-const FEISHU_REQUIRE_MENTION = parseBool(process.env.FEISHU_REQUIRE_MENTION ?? '1');
+const FEISHU_REQUIRE_MENTION = parseBool(process.env.FEISHU_REQUIRE_MENTION ?? '0');
 const FEISHU_RESOLVE_SENDER_NAMES = parseBool(process.env.FEISHU_RESOLVE_SENDER_NAMES ?? '0');
 const FEISHU_STREAMING = parseBool(process.env.FEISHU_STREAMING ?? '1');
 const FEISHU_STREAM_UPDATE_MS = positiveInt(process.env.FEISHU_STREAM_UPDATE_MS, 800);
@@ -54,8 +54,14 @@ const CODEX_BIN = process.env.CODEX_BIN ?? 'codex';
 const CODEX_WORKDIR = process.env.CODEX_WORKDIR ?? resolve(PROJECT_ROOT, '..');
 const CODEX_MODEL = process.env.CODEX_MODEL;
 const CODEX_PROFILE = process.env.CODEX_PROFILE;
-const CODEX_SANDBOX = process.env.CODEX_SANDBOX ?? 'workspace-write';
-const CODEX_FULL_AUTO = parseBool(process.env.CODEX_FULL_AUTO ?? '1');
+const CODEX_APPROVAL_MODE = normalizeCodexApprovalMode(
+  process.env.CODEX_APPROVAL_MODE,
+  process.env.CODEX_FULL_AUTO,
+);
+const CODEX_SANDBOX_MODE = normalizeCodexSandboxMode(
+  process.env.CODEX_SANDBOX_MODE,
+  process.env.CODEX_SANDBOX,
+);
 const CODEX_SKIP_GIT_REPO_CHECK = parseBool(process.env.CODEX_SKIP_GIT_REPO_CHECK ?? '0');
 const MAX_PROMPT_CHARS = positiveInt(process.env.MAX_PROMPT_CHARS, 16000);
 const MAX_OUTPUT_CHARS = positiveInt(process.env.MAX_OUTPUT_CHARS, 12000);
@@ -70,11 +76,11 @@ const stateStore = createChatStateStore(CHAT_DIR);
 const queueManager = createChatQueueManager({ logPrefix: 'codex-feishu-bridge' });
 const codexRuntime = createCodexRuntime({
   bin: CODEX_BIN,
-  fullAuto: CODEX_FULL_AUTO,
+  approvalMode: CODEX_APPROVAL_MODE,
   model: CODEX_MODEL,
   profile: CODEX_PROFILE,
   runDir: RUN_DIR,
-  sandbox: CODEX_SANDBOX,
+  sandboxMode: CODEX_SANDBOX_MODE,
   skipGitRepoCheck: CODEX_SKIP_GIT_REPO_CHECK,
   stateDir: STATE_DIR,
   workdir: CODEX_WORKDIR,
@@ -365,6 +371,8 @@ async function renderStatusText(chatKey, chatId, userId) {
     `local_history_messages: ${state.history.length}`,
     `workdir: ${CODEX_WORKDIR}`,
     `state_dir: ${STATE_DIR}`,
+    `approval_mode: ${CODEX_APPROVAL_MODE}`,
+    `sandbox_mode: ${CODEX_SANDBOX_MODE}`,
     `domain: ${FEISHU_DOMAIN}`,
     `group_policy: ${FEISHU_GROUP_POLICY}`,
   ].join('\n');
@@ -587,6 +595,24 @@ function normalizePath(value) {
   const trimmed = String(value ?? '').trim();
   if (!trimmed) return '/feishu/events';
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+function normalizeCodexApprovalMode(explicitValue, legacyFullAutoValue) {
+  const explicit = explicitValue?.trim().toLowerCase();
+  if (explicit === 'never' || explicit === 'on-request' || explicit === 'on-failure' || explicit === 'untrusted') {
+    return explicit;
+  }
+  if (explicit) {
+    process.stderr.write(
+      `codex-feishu-bridge: unsupported CODEX_APPROVAL_MODE "${explicitValue}", falling back to compatibility mode.\n`,
+    );
+  }
+  return parseBool(legacyFullAutoValue ?? '1') ? 'never' : 'on-request';
+}
+
+function normalizeCodexSandboxMode(explicitValue, legacySandboxValue) {
+  const value = (explicitValue ?? legacySandboxValue ?? 'workspace-write').trim();
+  return value || 'workspace-write';
 }
 
 function parseCsv(value) {

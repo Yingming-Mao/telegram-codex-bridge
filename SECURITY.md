@@ -8,7 +8,9 @@ Treat it as a privileged interface to the host machine.
 - Never commit `.env` or bot tokens.
 - Restrict `ALLOWED_TELEGRAM_USER_IDS` to trusted accounts only.
 - Prefer a dedicated bot token for this bridge. Rotate the token if it has ever been exposed.
-- Review `CODEX_FULL_AUTO` before enabling it on a machine with sensitive files or credentials.
+- Prefer `CODEX_APPROVAL_MODE=on-request` unless you explicitly want unattended execution.
+- Treat `CODEX_APPROVAL_MODE=never` and `CODEX_SANDBOX_MODE=danger-full-access` as high-risk settings.
+- `CODEX_FULL_AUTO` is still accepted for compatibility, but new deployments should use `CODEX_APPROVAL_MODE`.
 - Use a dedicated work directory and avoid pointing `CODEX_WORKDIR` at unrelated personal or production paths.
 
 ## If Something Leaks

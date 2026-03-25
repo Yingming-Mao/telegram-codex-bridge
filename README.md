@@ -41,8 +41,8 @@ Example:
 BRIDGE_PLATFORM=feishu
 CODEX_WORKDIR=/abs/path/to/your/project
 CODEX_BIN=/abs/path/to/your/codex
-CODEX_FULL_AUTO=1
-CODEX_SANDBOX=workspace-write
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
 FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=replace_me
 FEISHU_ALLOW_FROM=ou_xxx
@@ -68,7 +68,8 @@ Feishu features:
 
 - Persistent connection or webhook
 - Private-chat allowlist
-- Group policy and `@mention` gating
+- Group chat enabled by default once the bot is added
+- Optional group allowlist and optional `@mention` gating
 - Approximate streaming updates from Codex JSON events
 - `/start`, `/status`, `/reset`
 
@@ -82,8 +83,8 @@ Example:
 BRIDGE_PLATFORM=telegram
 CODEX_WORKDIR=/abs/path/to/your/project
 CODEX_BIN=/abs/path/to/your/codex
-CODEX_FULL_AUTO=1
-CODEX_SANDBOX=workspace-write
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
 TELEGRAM_BOT_TOKEN=123456789:replace_me
 ALLOWED_TELEGRAM_USER_IDS=123456789
 ```
@@ -98,14 +99,54 @@ Features:
 
 - `CODEX_WORKDIR`
 - `CODEX_BIN`
-- `CODEX_FULL_AUTO`
-- `CODEX_SANDBOX`
+- `CODEX_APPROVAL_MODE`
+- `CODEX_SANDBOX_MODE`
 - `CODEX_MODEL`
 - `CODEX_PROFILE`
 - `CODEX_SKIP_GIT_REPO_CHECK`
 - `MAX_PROMPT_CHARS`
 - `MAX_OUTPUT_CHARS`
 - `BRIDGE_STATE_DIR`
+
+## Execution Modes
+
+These two variables control how the bridge invokes `codex exec`:
+
+- `CODEX_APPROVAL_MODE` maps to `codex exec -a`
+- `CODEX_SANDBOX_MODE` maps to `codex exec -s`
+
+Recommended default:
+
+```dotenv
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
+```
+
+This is the safer mode:
+
+- Codex can still ask for approval before higher-risk actions
+- File access stays inside the normal workspace-write sandbox
+- Recommended for most public or shared deployments
+
+Unattended full-auto mode:
+
+```dotenv
+CODEX_APPROVAL_MODE=never
+CODEX_SANDBOX_MODE=danger-full-access
+```
+
+Use this only if you explicitly want the bridge to run Codex without interactive approval:
+
+- `CODEX_APPROVAL_MODE=never` means Codex will not stop to ask for confirmation
+- `CODEX_SANDBOX_MODE=danger-full-access` gives Codex broad host access
+- This is convenient for automation, but it is the highest-risk setup in this repo
+- Do not enable it on a machine you do not fully trust with remote bot-triggered actions
+
+Compatibility:
+
+- `CODEX_FULL_AUTO=1` maps to `CODEX_APPROVAL_MODE=never`
+- `CODEX_FULL_AUTO=0` maps to `CODEX_APPROVAL_MODE=on-request`
+- `CODEX_SANDBOX` is still accepted as a legacy alias for `CODEX_SANDBOX_MODE`
 
 ## Notes
 

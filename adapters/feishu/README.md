@@ -206,14 +206,34 @@ FEISHU_APP_SECRET=replace_me
 FEISHU_ALLOW_FROM=ou_xxx
 FEISHU_SUBSCRIPTION_MODE=websocket
 CODEX_WORKDIR=/abs/path/to/your/project
-CODEX_FULL_AUTO=1
-CODEX_SANDBOX=workspace-write
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
 ```
 
 说明：
 
 - `FEISHU_ALLOW_FROM` 必填
 - `FEISHU_VERIFICATION_TOKEN` 这里不需要
+
+关于 Codex 执行模式：
+
+- `CODEX_APPROVAL_MODE` 对应 `codex exec -a`
+- `CODEX_SANDBOX_MODE` 对应 `codex exec -s`
+- 推荐默认值是：
+
+```dotenv
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
+```
+
+- 如果你明确要无人值守执行，才改成：
+
+```dotenv
+CODEX_APPROVAL_MODE=never
+CODEX_SANDBOX_MODE=danger-full-access
+```
+
+- 这会让 Codex 不再请求审批，并获得更高权限，风险明显更高
 
 ### 如果你走 webhook
 
@@ -227,8 +247,8 @@ FEISHU_WEBHOOK_HOST=127.0.0.1
 FEISHU_WEBHOOK_PORT=3000
 FEISHU_WEBHOOK_PATH=/feishu/events
 CODEX_WORKDIR=/abs/path/to/your/project
-CODEX_FULL_AUTO=1
-CODEX_SANDBOX=workspace-write
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
 ```
 
 ## 6. `FEISHU_ALLOW_FROM` 怎么写
@@ -311,13 +331,13 @@ codex-feishu-bridge: webhook http://127.0.0.1:3000/feishu/events
 
 ## 10. 群聊配置
 
-默认行为是保守的。
+默认行为是开放的：把机器人拉进群以后，群里所有人都可以直接触发。
 
 关键配置：
 
-- `FEISHU_GROUP_POLICY=disabled`
 - `FEISHU_GROUP_POLICY=open`
 - `FEISHU_GROUP_POLICY=allowlist`
+- `FEISHU_GROUP_POLICY=disabled`
 
 如果是 `allowlist`，还要配：
 
@@ -325,16 +345,16 @@ codex-feishu-bridge: webhook http://127.0.0.1:3000/feishu/events
 FEISHU_GROUP_ALLOW_FROM=oc_xxx,oc_yyy
 ```
 
-默认群里还要求 `@mention`：
-
-```dotenv
-FEISHU_REQUIRE_MENTION=1
-```
-
-如果你想群里不用 `@` 也能触发：
+默认群里不要求 `@mention`：
 
 ```dotenv
 FEISHU_REQUIRE_MENTION=0
+```
+
+如果你想收紧成必须 `@机器人` 才触发：
+
+```dotenv
+FEISHU_REQUIRE_MENTION=1
 ```
 
 ## 11. Streaming 说明

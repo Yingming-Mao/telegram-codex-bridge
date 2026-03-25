@@ -41,8 +41,8 @@ npm start
 BRIDGE_PLATFORM=feishu
 CODEX_WORKDIR=/abs/path/to/your/project
 CODEX_BIN=/abs/path/to/your/codex
-CODEX_FULL_AUTO=1
-CODEX_SANDBOX=workspace-write
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
 FEISHU_APP_ID=cli_xxx
 FEISHU_APP_SECRET=replace_me
 FEISHU_ALLOW_FROM=ou_xxx
@@ -68,7 +68,8 @@ FEISHU_WEBHOOK_PATH=/feishu/events
 
 - 支持长连接和 webhook
 - 私聊 allowlist
-- 群策略和 `@mention`
+- 默认拉进群就能用
+- 也支持按群收紧和可选 `@mention` 触发
 - 基于 Codex JSON 事件流的近似 streaming
 - `/start`、`/status`、`/reset`
 
@@ -82,8 +83,8 @@ FEISHU_WEBHOOK_PATH=/feishu/events
 BRIDGE_PLATFORM=telegram
 CODEX_WORKDIR=/abs/path/to/your/project
 CODEX_BIN=/abs/path/to/your/codex
-CODEX_FULL_AUTO=1
-CODEX_SANDBOX=workspace-write
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
 TELEGRAM_BOT_TOKEN=123456789:replace_me
 ALLOWED_TELEGRAM_USER_IDS=123456789
 ```
@@ -98,14 +99,54 @@ ALLOWED_TELEGRAM_USER_IDS=123456789
 
 - `CODEX_WORKDIR`
 - `CODEX_BIN`
-- `CODEX_FULL_AUTO`
-- `CODEX_SANDBOX`
+- `CODEX_APPROVAL_MODE`
+- `CODEX_SANDBOX_MODE`
 - `CODEX_MODEL`
 - `CODEX_PROFILE`
 - `CODEX_SKIP_GIT_REPO_CHECK`
 - `MAX_PROMPT_CHARS`
 - `MAX_OUTPUT_CHARS`
 - `BRIDGE_STATE_DIR`
+
+## 执行模式
+
+这两个变量决定 bridge 调用 `codex exec` 时怎么传参：
+
+- `CODEX_APPROVAL_MODE` 对应 `codex exec -a`
+- `CODEX_SANDBOX_MODE` 对应 `codex exec -s`
+
+推荐默认值：
+
+```dotenv
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
+```
+
+这是更安全的模式：
+
+- Codex 在高风险动作前仍然可以请求审批
+- 文件访问仍然限制在常规的 workspace-write 沙箱里
+- 大多数公开部署或多人共用环境都建议用这一档
+
+无人值守全自动模式：
+
+```dotenv
+CODEX_APPROVAL_MODE=never
+CODEX_SANDBOX_MODE=danger-full-access
+```
+
+只有你明确希望 bridge 完全不弹审批、直接执行时，才应该启用：
+
+- `CODEX_APPROVAL_MODE=never` 表示 Codex 不再停下来请求确认
+- `CODEX_SANDBOX_MODE=danger-full-access` 表示给 Codex 更广的主机访问权限
+- 这对自动化很方便，但也是这个仓库里风险最高的一档配置
+- 不要在你不愿意让远程 bot 指令直接操作的机器上启用它
+
+兼容说明：
+
+- `CODEX_FULL_AUTO=1` 会映射成 `CODEX_APPROVAL_MODE=never`
+- `CODEX_FULL_AUTO=0` 会映射成 `CODEX_APPROVAL_MODE=on-request`
+- `CODEX_SANDBOX` 仍然可用，但现在是 `CODEX_SANDBOX_MODE` 的旧别名
 
 ## 说明
 

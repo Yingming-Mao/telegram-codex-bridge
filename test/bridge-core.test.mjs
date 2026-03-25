@@ -8,10 +8,10 @@ import {
 } from '../bridge-core.mjs';
 
 const BASE_CONFIG = {
-  fullAuto: true,
+  approvalMode: 'never',
   model: 'gpt-5.4',
   profile: 'default',
-  sandbox: 'workspace-write',
+  sandboxMode: 'workspace-write',
   skipGitRepoCheck: true,
   stateDir: '/tmp/telegram-codex-state',
   workdir: '/workspace/project',
@@ -26,17 +26,18 @@ test('buildCodexArgs adds --add-dir on first exec', () => {
   });
 
   assert.deepEqual(args, [
+    '-a',
+    'never',
+    '-s',
+    'workspace-write',
     'exec',
     '-C',
     '/workspace/project',
-    '-s',
-    'workspace-write',
     '--json',
     '--color',
     'never',
     '--add-dir',
     '/tmp/telegram-codex-state',
-    '--full-auto',
     '-m',
     'gpt-5.4',
     '-p',
@@ -59,11 +60,14 @@ test('buildCodexArgs carries writable roots through resume config override', () 
   });
 
   assert.deepEqual(args, [
+    '-a',
+    'never',
+    '-s',
+    'workspace-write',
     'exec',
     'resume',
     '-c',
     'sandbox_workspace_write.writable_roots=["/tmp/telegram-codex-state"]',
-    '--full-auto',
     '-m',
     'gpt-5.4',
     '-p',

@@ -52,8 +52,14 @@ const CODEX_BIN = process.env.CODEX_BIN ?? 'codex';
 const CODEX_WORKDIR = process.env.CODEX_WORKDIR ?? resolve(PROJECT_ROOT, '..');
 const CODEX_MODEL = process.env.CODEX_MODEL;
 const CODEX_PROFILE = process.env.CODEX_PROFILE;
-const CODEX_SANDBOX = process.env.CODEX_SANDBOX ?? 'workspace-write';
-const CODEX_FULL_AUTO = parseBool(process.env.CODEX_FULL_AUTO ?? '1');
+const CODEX_APPROVAL_MODE = normalizeCodexApprovalMode(
+  process.env.CODEX_APPROVAL_MODE,
+  process.env.CODEX_FULL_AUTO,
+);
+const CODEX_SANDBOX_MODE = normalizeCodexSandboxMode(
+  process.env.CODEX_SANDBOX_MODE,
+  process.env.CODEX_SANDBOX,
+);
 const CODEX_SKIP_GIT_REPO_CHECK = parseBool(process.env.CODEX_SKIP_GIT_REPO_CHECK ?? '0');
 const MAX_PROMPT_CHARS = positiveInt(process.env.MAX_PROMPT_CHARS, 16000);
 const MAX_OUTPUT_CHARS = positiveInt(process.env.MAX_OUTPUT_CHARS, 12000);
@@ -96,11 +102,11 @@ const stateStore = createChatStateStore(CHAT_DIR);
 const queueManager = createChatQueueManager({ logPrefix: 'telegram-codex-bridge' });
 const codexRuntime = createCodexRuntime({
   bin: CODEX_BIN,
-  fullAuto: CODEX_FULL_AUTO,
+  approvalMode: CODEX_APPROVAL_MODE,
   model: CODEX_MODEL,
   profile: CODEX_PROFILE,
   runDir: RUN_DIR,
-  sandbox: CODEX_SANDBOX,
+  sandboxMode: CODEX_SANDBOX_MODE,
   skipGitRepoCheck: CODEX_SKIP_GIT_REPO_CHECK,
   stateDir: STATE_DIR,
   workdir: CODEX_WORKDIR,
@@ -639,8 +645,8 @@ async function renderStatusText(chatKey, { channelLabel, chatId, userId }) {
     `local_history_messages: ${state.history.length}`,
     `workdir: ${CODEX_WORKDIR}`,
     `state_dir: ${STATE_DIR}`,
-    `full_auto: ${CODEX_FULL_AUTO ? 'on' : 'off'}`,
-    `sandbox: ${CODEX_SANDBOX}`,
+    `approval_mode: ${CODEX_APPROVAL_MODE}`,
+    `sandbox_mode: ${CODEX_SANDBOX_MODE}`,
   ].join('\n');
 }
 
@@ -814,6 +820,24 @@ function normalizeWebhookPath(value) {
   const trimmed = String(value ?? '').trim();
   if (!trimmed) return '/webhook/lark';
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+function normalizeCodexApprovalMode(explicitValue, legacyFullAutoValue) {
+  const explicit = explicitValue?.trim().toLowerCase();
+  if (explicit === 'never' || explicit === 'on-request' || explicit === 'on-failure' || explicit === 'untrusted') {
+    return explicit;
+  }
+  if (explicit) {
+    process.stderr.write(
+      `telegram-codex-bridge: unsupported CODEX_APPROVAL_MODE "${explicitValue}", falling back to compatibility mode.\n`,
+    );
+  }
+  return parseBool(legacyFullAutoValue ?? '1') ? 'never' : 'on-request';
+}
+
+function normalizeCodexSandboxMode(explicitValue, legacySandboxValue) {
+  const value = (explicitValue ?? legacySandboxValue ?? 'workspace-write').trim();
+  return value || 'workspace-write';
 }
 
 function parseCsv(value) {

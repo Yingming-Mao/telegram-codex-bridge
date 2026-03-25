@@ -81,10 +81,10 @@ export function createCodexRuntime(config) {
         imagePaths,
         outputPath,
         config: {
-          fullAuto: config.fullAuto,
+          approvalMode: config.approvalMode,
           model: config.model,
           profile: config.profile,
-          sandbox: config.sandbox,
+          sandboxMode: config.sandboxMode,
           skipGitRepoCheck: config.skipGitRepoCheck,
           stateDir: config.stateDir,
           workdir: config.workdir,

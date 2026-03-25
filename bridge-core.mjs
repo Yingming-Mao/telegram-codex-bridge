@@ -3,7 +3,11 @@ function buildWritableRootsOverride(writableRoots) {
 }
 
 export function buildCodexArgs({ sessionId, imagePaths, outputPath, config }) {
-  const args = ['exec'];
+  const args = [];
+
+  if (config.approvalMode) args.push('-a', config.approvalMode);
+  if (config.sandboxMode) args.push('-s', config.sandboxMode);
+  args.push('exec');
 
   if (sessionId) {
     args.push('resume');
@@ -14,7 +18,6 @@ export function buildCodexArgs({ sessionId, imagePaths, outputPath, config }) {
       args.push('-c', buildWritableRootsOverride([config.stateDir]));
     }
 
-    if (config.fullAuto) args.push('--full-auto');
     if (config.model) args.push('-m', config.model);
     if (config.profile) args.push('-p', config.profile);
     if (config.skipGitRepoCheck) args.push('--skip-git-repo-check');
@@ -28,8 +31,6 @@ export function buildCodexArgs({ sessionId, imagePaths, outputPath, config }) {
   args.push(
     '-C',
     config.workdir,
-    '-s',
-    config.sandbox,
     '--json',
     '--color',
     'never',
@@ -37,7 +38,6 @@ export function buildCodexArgs({ sessionId, imagePaths, outputPath, config }) {
     config.stateDir,
   );
 
-  if (config.fullAuto) args.push('--full-auto');
   if (config.model) args.push('-m', config.model);
   if (config.profile) args.push('-p', config.profile);
   if (config.skipGitRepoCheck) args.push('--skip-git-repo-check');
