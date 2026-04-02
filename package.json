@@ -8,8 +8,10 @@
   "main": "server.mjs",
   "scripts": {
     "start": "node server.mjs",
+    "start:remote-client": "node remote-client.mjs",
+    "start:remote-server": "node remote-server.mjs",
     "test": "node --test",
-    "check": "node --check server.mjs && node --check bridge-core.mjs && node --check bridge-rich-text.mjs && node --check codex-runtime.mjs && npm test"
+    "check": "node --check server.mjs && node --check bridge-core.mjs && node --check bridge-rich-text.mjs && node --check codex-runtime.mjs && node --check remote-common.mjs && node --check remote-client.mjs && node --check remote-server.mjs && npm test"
   },
   "engines": {
     "node": ">=20"

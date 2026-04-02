@@ -4,7 +4,15 @@
 
 One repo, one root `.env`, one `npm start`.
 
-This project bridges Telegram or Feishu/Lark messages into Codex CLI sessions. Telegram and Feishu share the same Codex runtime core; only the platform adapter differs.
+This repo has more than one control path.
+
+The shared core is a reusable Codex runtime, with multiple parallel entry modes on top:
+
+- `Telegram mode`: a Telegram bot directly controls local Codex
+- `Feishu mode`: a Feishu / Lark bot directly controls local Codex
+- `Remote mode`: `remote-client` controls `remote-server`, and the local agent runs Codex
+
+Telegram / Feishu / Remote are parallel modes, not one chained pipeline.
 
 ## Recent Changes
 
@@ -13,14 +21,15 @@ This project bridges Telegram or Feishu/Lark messages into Codex CLI sessions. T
 - Added shared Codex runtime core for Telegram and Feishu adapters
 - Improved rich-text rendering for Telegram and Feishu replies
 
-## Choose A Platform
+## Choose A Mode
 
-Set `BRIDGE_PLATFORM` in the root `.env`:
+### Mode 1: Telegram
 
-- `telegram`
-- `feishu`
+Use this when:
 
-Then start from the repo root:
+- you want to talk to Codex directly from Telegram
+
+Start it with:
 
 ```bash
 npm install
@@ -28,10 +37,55 @@ cp .env.example .env
 npm start
 ```
 
-If you omit `BRIDGE_PLATFORM`, the bridge will auto-detect:
+Root `.env`:
+
+```dotenv
+BRIDGE_PLATFORM=telegram
+```
+
+### Mode 2: Feishu / Lark
+
+Use this when:
+
+- you want to talk to Codex directly from Feishu / Lark
+
+Start it with:
+
+```bash
+npm install
+cp .env.example .env
+npm start
+```
+
+Root `.env`:
+
+```dotenv
+BRIDGE_PLATFORM=feishu
+```
+
+If you omit `BRIDGE_PLATFORM`, the bridge auto-detects:
 
 - `feishu` when `FEISHU_APP_ID` is set and `TELEGRAM_BOT_TOKEN` is unset
 - otherwise `telegram`
+
+### Mode 3: Remote
+
+Use this when:
+
+- you do not want to expose the local Codex machine publicly
+- you want a separate public `remote-client`
+- you want to control local Codex remotely
+
+Start it with:
+
+```bash
+npm run start:remote-client
+npm run start:remote-server
+```
+
+Detailed setup:
+
+- [docs/remote-mode.md](docs/remote-mode.md)
 
 ## Feishu / Lark
 
@@ -135,6 +189,18 @@ Features:
 - Photo/document download support
 - `/start`, `/status`, `/reset`
 
+Shortest config:
+
+```dotenv
+BRIDGE_PLATFORM=telegram
+CODEX_WORKDIR=/abs/path/to/your/project
+CODEX_BIN=/abs/path/to/your/codex
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
+TELEGRAM_BOT_TOKEN=123456789:replace_me
+ALLOWED_TELEGRAM_USER_IDS=123456789
+```
+
 ## Shared Configuration
 
 - `CODEX_WORKDIR`
@@ -148,6 +214,100 @@ Features:
 - `MAX_PROMPT_CHARS`
 - `MAX_OUTPUT_CHARS`
 - `BRIDGE_STATE_DIR`
+
+## Remote Mode
+
+Remote mode does not depend on Telegram or Feishu.
+
+It is a separate parallel control path:
+
+- `remote-client`: public hub
+- `remote-server`: local agent
+
+Shortest setup:
+
+### `remote-client`
+
+```dotenv
+REMOTE_CLIENT_HOST=0.0.0.0
+REMOTE_CLIENT_PORT=8789
+REMOTE_SHARED_SECRET=replace_me
+REMOTE_CLIENT_API_TOKEN=replace_me
+```
+
+```bash
+npm run start:remote-client
+```
+
+### `remote-server`
+
+```dotenv
+REMOTE_CLIENT_URL=https://your-client.example.com
+REMOTE_SERVER_ID=my-laptop
+REMOTE_SHARED_SECRET=replace_me
+CODEX_WORKDIR=/abs/path/to/your/project
+CODEX_BIN=/abs/path/to/your/codex
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
+```
+
+```bash
+npm run start:remote-server
+```
+
+### Remote API
+
+List connected servers:
+
+```bash
+curl -H "Authorization: Bearer $REMOTE_CLIENT_API_TOKEN" \
+  http://127.0.0.1:8789/remote/api/servers
+```
+
+Run a prompt on a remote server:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $REMOTE_CLIENT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8789/remote/api/run \
+  -d '{
+    "server_id": "my-laptop",
+    "chat_key": "demo-chat",
+    "text": "Inspect the current repository structure"
+  }'
+```
+
+Get status:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $REMOTE_CLIENT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8789/remote/api/status \
+  -d '{"server_id":"my-laptop","chat_key":"demo-chat"}'
+```
+
+Reset a session:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $REMOTE_CLIENT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8789/remote/api/reset \
+  -d '{"server_id":"my-laptop","chat_key":"demo-chat"}'
+```
+
+Notes:
+
+- `chat_key` controls remote session reuse
+- requests for the same `chat_key` are serialized
+- `remote-client` is currently a generic HTTP hub
+- remote mode is parallel to Telegram / Feishu, not wired through them
+
+Detailed setup:
+
+- [docs/remote-mode.md](docs/remote-mode.md)
 
 ## Execution Modes
 

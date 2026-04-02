@@ -4,7 +4,15 @@
 
 一个仓库，一份根目录 `.env`，一个 `npm start`。
 
-这个项目把 Telegram 或飞书 / Lark 消息桥接到 Codex CLI。Telegram 和飞书共用同一套 Codex runtime core，只在平台接入层不同。
+这个仓库不只有一种用法。
+
+它的核心是共享的 Codex runtime，上面挂了几种并列的控制方式：
+
+- `Telegram mode`: Telegram 机器人直接控制本地 Codex
+- `Feishu mode`: 飞书 / Lark 机器人直接控制本地 Codex
+- `Remote mode`: `remote-client` 控制 `remote-server`，由本地 agent 执行 Codex
+
+也就是说，Telegram / Feishu / Remote 是三种并列入口，不是一条串联链路。
 
 ## 最近更新
 
@@ -13,14 +21,15 @@
 - 抽出 Telegram 和飞书共享的 Codex runtime core
 - 改进 Telegram 和飞书回包的富文本显示
 
-## 先选平台
+## 先选模式
 
-在根目录 `.env` 里设置：
+### 模式 1：Telegram
 
-- `BRIDGE_PLATFORM=telegram`
-- `BRIDGE_PLATFORM=feishu`
+适合：
 
-然后都从仓库根目录启动：
+- 你想在 Telegram 里直接和 Codex 对话
+
+启动方式：
 
 ```bash
 npm install
@@ -28,10 +37,55 @@ cp .env.example .env
 npm start
 ```
 
+根目录 `.env`：
+
+```dotenv
+BRIDGE_PLATFORM=telegram
+```
+
+### 模式 2：Feishu / Lark
+
+适合：
+
+- 你想在飞书 / Lark 里直接和 Codex 对话
+
+启动方式：
+
+```bash
+npm install
+cp .env.example .env
+npm start
+```
+
+根目录 `.env`：
+
+```dotenv
+BRIDGE_PLATFORM=feishu
+```
+
 如果你不写 `BRIDGE_PLATFORM`，程序会自动判断：
 
 - 设置了 `FEISHU_APP_ID` 且没设置 `TELEGRAM_BOT_TOKEN` 时，走 `feishu`
 - 其他情况默认走 `telegram`
+
+### 模式 3：Remote
+
+适合：
+
+- 你想让本地 Codex 机器不暴露公网端口
+- 你想单独跑一个公网 `remote-client`
+- 你想远程控制本地 Codex
+
+启动方式：
+
+```bash
+npm run start:remote-client
+npm run start:remote-server
+```
+
+更详细说明见：
+
+- [docs/remote-mode.zh.md](docs/remote-mode.zh.md)
 
 ## 飞书 / Lark
 
@@ -139,6 +193,18 @@ ALLOWED_TELEGRAM_USER_IDS=123456789
 - 支持图片/文档下载
 - `/start`、`/status`、`/reset`
 
+最短配置：
+
+```dotenv
+BRIDGE_PLATFORM=telegram
+CODEX_WORKDIR=/abs/path/to/your/project
+CODEX_BIN=/abs/path/to/your/codex
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
+TELEGRAM_BOT_TOKEN=123456789:replace_me
+ALLOWED_TELEGRAM_USER_IDS=123456789
+```
+
 ## 共享配置
 
 - `CODEX_WORKDIR`
@@ -152,6 +218,100 @@ ALLOWED_TELEGRAM_USER_IDS=123456789
 - `MAX_PROMPT_CHARS`
 - `MAX_OUTPUT_CHARS`
 - `BRIDGE_STATE_DIR`
+
+## 远程模式
+
+远程模式不依赖 Telegram 或飞书。
+
+它是另一套并列控制方式：
+
+- `remote-client`：公网 hub
+- `remote-server`：本地 agent
+
+最短配置如下。
+
+### remote-client
+
+```dotenv
+REMOTE_CLIENT_HOST=0.0.0.0
+REMOTE_CLIENT_PORT=8789
+REMOTE_SHARED_SECRET=replace_me
+REMOTE_CLIENT_API_TOKEN=replace_me
+```
+
+```bash
+npm run start:remote-client
+```
+
+### remote-server
+
+```dotenv
+REMOTE_CLIENT_URL=https://your-client.example.com
+REMOTE_SERVER_ID=my-laptop
+REMOTE_SHARED_SECRET=replace_me
+CODEX_WORKDIR=/abs/path/to/your/project
+CODEX_BIN=/abs/path/to/your/codex
+CODEX_APPROVAL_MODE=on-request
+CODEX_SANDBOX_MODE=workspace-write
+```
+
+```bash
+npm run start:remote-server
+```
+
+### 远程 API
+
+列出在线 server：
+
+```bash
+curl -H "Authorization: Bearer $REMOTE_CLIENT_API_TOKEN" \
+  http://127.0.0.1:8789/remote/api/servers
+```
+
+发起一次运行：
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $REMOTE_CLIENT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8789/remote/api/run \
+  -d '{
+    "server_id": "my-laptop",
+    "chat_key": "demo-chat",
+    "text": "帮我看下当前仓库结构"
+  }'
+```
+
+查看状态：
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $REMOTE_CLIENT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8789/remote/api/status \
+  -d '{"server_id":"my-laptop","chat_key":"demo-chat"}'
+```
+
+重置 session：
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $REMOTE_CLIENT_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8789/remote/api/reset \
+  -d '{"server_id":"my-laptop","chat_key":"demo-chat"}'
+```
+
+说明：
+
+- `chat_key` 决定远程会话复用粒度
+- 同一个 `chat_key` 会串行执行，避免同一条 Codex session 打架
+- `remote-client` 当前是通用 HTTP API
+- 远程模式和 Telegram / Feishu 是并列关系
+
+更详细说明见：
+
+- [docs/remote-mode.zh.md](docs/remote-mode.zh.md)
 
 ## 执行模式
 
